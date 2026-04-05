@@ -6,9 +6,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 PROJECT_DIR = Path(__file__).parent.parent
-DATA_DIR = Path(os.environ.get("CLAUDE_MEMORY_DATA_DIR", str(PROJECT_DIR / "data")))
+DATA_DIR = Path(os.environ.get("VEF_DATA_DIR", str(PROJECT_DIR / "data")))
 CHROMA_DIR = DATA_DIR / "chromadb"
-COLLECTION_NAME = "claude_memory"
+COLLECTION_NAME = "vector_embedded_finder"
 
 SUPPORTED_EXTENSIONS = {
     "image": {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff"},

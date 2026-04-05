@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import { Grid, ActionPanel, Action, Icon, Color, environment, getPreferenceValues } from "@raycast/api";
+import { Grid, ActionPanel, Action, Icon, Color, environment, getPreferenceValues, showToast, Toast, openExtensionPreferences } from "@raycast/api";
 import { execSync } from "child_process";
 import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
@@ -61,6 +61,46 @@ function getVideoThumbnail(filePath: string, fileId: string): string | null {
   }
 }
 
+function validateSetup(): string | null {
+  const prefs = getPreferenceValues<Preferences>();
+  const pkgPath = prefs.pythonPackagePath;
+
+  if (!pkgPath || !pkgPath.trim()) {
+    return "Python Package Path is not set. Open extension preferences and set the path to the vector-embedded-finder repo.";
+  }
+
+  if (!existsSync(pkgPath)) {
+    return `Python Package Path does not exist: ${pkgPath}`;
+  }
+
+  if (!existsSync(join(pkgPath, "vector_embedded_finder"))) {
+    return `"vector_embedded_finder/" not found in ${pkgPath}. The path should point to the repo root containing the vector_embedded_finder/ directory.`;
+  }
+
+  const python = prefs.pythonPath || "python3";
+  try {
+    execSync(`${python} --version`, { timeout: 5000, encoding: "utf-8" });
+  } catch {
+    return `Python binary not found: ${python}. Set the correct path in extension preferences.`;
+  }
+
+  try {
+    execSync(
+      `${python} -c "import sys; sys.path.insert(0, '${pkgPath}'); from vector_embedded_finder.search import search"`,
+      { timeout: 10000, encoding: "utf-8", env: { ...process.env, PATH: process.env.PATH || "/usr/bin:/usr/local/bin" } },
+    );
+  } catch (e: unknown) {
+    const stderr = e instanceof Error && "stderr" in e ? String((e as { stderr: unknown }).stderr) : "";
+    if (stderr.includes("No module named")) {
+      const match = stderr.match(/No module named '([^']+)'/);
+      return `Missing Python dependency: ${match?.[1] || "unknown"}. Run "pip install -e ." in the repo root.`;
+    }
+    return `Python import failed. Run "pip install -e ." in ${pkgPath}. Error: ${stderr.slice(0, 200)}`;
+  }
+
+  return null;
+}
+
 function runSearch(query: string, count: number = 20): SearchResult[] {
   if (!query.trim()) return [];
 
@@ -74,8 +114,8 @@ function runSearch(query: string, count: number = 20): SearchResult[] {
       `${python} -c "
 import json, sys
 sys.path.insert(0, '${pkgPath}')
-from claude_memory import search as s
-results = s.search('${safeQuery}', n_results=${count})
+from vector_embedded_finder.search import search
+results = search('${safeQuery}', n_results=${count})
 print(json.dumps(results))
 "`,
       { timeout: 15000, encoding: "utf-8" },
@@ -91,8 +131,10 @@ export default function SearchMemory() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [searchText, setSearchText] = useState("");
+  const [setupError, setSetupError] = useState<string | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const cacheRef = useRef<Map<string, SearchResult[]>>(new Map());
+  const validatedRef = useRef(false);
 
   const handleSearchChange = useCallback((text: string) => {
     setSearchText(text);
@@ -102,6 +144,19 @@ export default function SearchMemory() {
       setIsLoading(false);
       return;
     }
+
+    if (!validatedRef.current) {
+      validatedRef.current = true;
+      const error = validateSetup();
+      if (error) {
+        setSetupError(error);
+        setIsLoading(false);
+        showToast({ style: Toast.Style.Failure, title: "Setup Error", message: error });
+        return;
+      }
+    }
+
+    if (setupError) return;
 
     const cached = cacheRef.current.get(text.trim().toLowerCase());
     if (cached) {
@@ -117,7 +172,24 @@ export default function SearchMemory() {
       setResults(r);
       setIsLoading(false);
     }, 400);
-  }, []);
+  }, [setupError]);
+
+  if (setupError) {
+    return (
+      <Grid columns={4} searchBarPlaceholder="Search memory...">
+        <Grid.EmptyView
+          icon={Icon.ExclamationMark}
+          title="Setup Required"
+          description={setupError}
+          actions={
+            <ActionPanel>
+              <Action title="Open Extension Preferences" icon={Icon.Gear} onAction={openExtensionPreferences} />
+            </ActionPanel>
+          }
+        />
+      </Grid>
+    );
+  }
 
   return (
     <Grid

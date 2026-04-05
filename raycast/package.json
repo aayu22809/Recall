@@ -1,7 +1,7 @@
 {
   "$schema": "https://www.raycast.com/schemas/extension.json",
-  "name": "claude-memory",
-  "title": "Claude Memory",
+  "name": "vector-embedded-finder",
+  "title": "Vector Embedded Finder",
   "description": "Search your local multimodal memory powered by Gemini Embedding 2",
   "icon": "command-icon.png",
   "author": "hughp",
@@ -11,10 +11,10 @@
     {
       "name": "pythonPackagePath",
       "title": "Python Package Path",
-      "description": "Absolute path to the claude-memory Python package (the directory containing claude_memory/)",
+      "description": "Absolute path to the vector-embedded-finder Python package (the directory containing vector_embedded_finder/)",
       "type": "textfield",
       "required": true,
-      "placeholder": "/path/to/claude-memory"
+      "placeholder": "/path/to/vector-embedded-finder"
     },
     {
       "name": "pythonPath",
@@ -30,14 +30,14 @@
     {
       "name": "search-memory",
       "title": "Memory Search",
-      "subtitle": "Claude Memory",
+      "subtitle": "Vector Embedded Finder",
       "description": "Search images, audio, PDFs and text with natural language",
       "mode": "view"
     },
     {
       "name": "open-memory",
       "title": "Memory Open",
-      "subtitle": "Claude Memory",
+      "subtitle": "Vector Embedded Finder",
       "description": "Search and open the best matching file",
       "mode": "no-view",
       "arguments": [

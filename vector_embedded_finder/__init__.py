@@ -1,4 +1,4 @@
-"""Local multimodal memory with semantic search, powered by Gemini Embedding 2 and ChromaDB."""
+"""Vector Embedded Finder - local multimodal memory with semantic search."""
 
 from .search import search
 from .ingest import ingest_file, ingest_text, ingest_directory
