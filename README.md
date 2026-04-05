@@ -25,30 +25,27 @@ Cross-modal search works out of the box. No tagging, no renaming, no metadata re
 
 ---
 
-## Quickstart
-
-### 1. Clone and install
+## Setup
 
 ```bash
 git clone https://github.com/hughminhphan/vector-embedded-finder.git
 cd vector-embedded-finder
 pip install -e .
-```
-
-### 2. Run the setup wizard
-
-The wizard handles everything: API key setup, folder selection, live indexing, and prints your exact Raycast configuration at the end.
-
-```bash
 python setup_wizard.py
 ```
 
-It will:
-- Auto-detect your Python path and repo location
-- Open [aistudio.google.com/apikey](https://aistudio.google.com/apikey) to get your free Gemini key
-- Let you pick which folders to index with a file-count preview
-- Show a live progress bar while embedding, with automatic rate-limit retry
-- Print a pre-filled Raycast setup card at the end
+That's it. The animated setup wizard handles everything end-to-end:
+
+![Setup wizard — splash, auto-detect, API key, folder picker, indexing, Raycast card](docs/images/wizard-screens.png)
+
+| Step | What happens |
+|---|---|
+| **Splash** | Animated rainbow logo |
+| **Auto-detect** | Finds your Python binary, repo path, and checks all deps |
+| **API key** | Opens [aistudio.google.com/apikey](https://aistudio.google.com/apikey), validates your key, saves to `.env` |
+| **Folder picker** | Checkbox list of your home folders with live file counts |
+| **Indexing** | Progress bar with current filename, auto-retries on rate limits |
+| **Raycast card** | Prints pre-filled Python Package Path and Python Binary — just copy-paste |
 
 > **Manual key setup:** `cp .env.example .env` and add `GEMINI_API_KEY=your_key`
 

@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0a0a0f;
+    font-family: 'SF Mono', 'Fira Code', 'Menlo', monospace;
+    display: flex;
+    gap: 16px;
+    padding: 24px;
+    width: 1200px;
+  }
+  .col { display: flex; flex-direction: column; gap: 16px; flex: 1; }
+  .screen {
+    background: #0f0f1a;
+    border: 1px solid #1f1f35;
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .titlebar {
+    background: #1a1a2e;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border-bottom: 1px solid #1f1f35;
+  }
+  .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .red { background: #ff5f57; }
+  .yellow { background: #febc2e; }
+  .green { background: #28c840; }
+  .title-text { color: #4b5563; font-size: 11px; margin-left: 8px; }
+  .body { padding: 18px 20px; font-size: 12.5px; line-height: 1.7; color: #e0e0e0; }
+  .purple { color: #a78bfa; }
+  .blue { color: #60a5fa; }
+  .teal { color: #34d399; }
+  .yellow-c { color: #fbbf24; }
+  .gray { color: #6b7280; }
+  .dim { color: #4b5563; }
+  .bold { font-weight: 700; }
+  .step { color: #a78bfa; font-size: 10px; letter-spacing: 2px; font-weight: 600; }
+  .divider { border: none; border-top: 1px solid #1f1f35; margin: 8px 0; }
+  .input-box {
+    background: #1a1a2e;
+    border: 1px solid #a78bfa;
+    border-radius: 4px;
+    padding: 6px 12px;
+    color: #a78bfa;
+    display: inline-block;
+    margin-top: 4px;
+  }
+  .progress-bar {
+    background: #1a1a2e;
+    border-radius: 3px;
+    height: 5px;
+    overflow: hidden;
+    margin: 6px 0 12px;
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #a78bfa, #60a5fa);
+    border-radius: 3px;
+  }
+  .raycast-card {
+    border: 1px solid #a78bfa55;
+    border-radius: 8px;
+    padding: 14px;
+    background: #0d0d1a;
+    margin-top: 8px;
+  }
+  .field-label { color: #4b5563; font-size: 10px; margin-bottom: 2px; }
+  .field-value {
+    background: #1a1a2e;
+    padding: 5px 10px;
+    border-radius: 4px;
+    color: #34d399;
+    font-size: 11px;
+    margin-bottom: 10px;
+  }
+  .checkbox-item { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+  .check-selected { color: #34d399; }
+  .check-unsel { color: #4b5563; }
+  .pointer { color: #fbbf24; }
+  .splash-logo {
+    font-size: 48px;
+    font-weight: 900;
+    letter-spacing: 16px;
+    text-align: center;
+    padding: 32px 0 8px;
+    background: linear-gradient(90deg, #ff6b9d, #c084fc, #818cf8, #60a5fa, #34d399, #fbbf24);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .splash-sub { text-align: center; color: #374151; font-size: 11px; letter-spacing: 2px; padding-bottom: 4px; }
+  .splash-sub2 { text-align: center; color: #1f2937; font-size: 10px; letter-spacing: 1px; padding-bottom: 24px; }
+  .dots { text-align: center; padding-bottom: 20px; }
+</style>
+</head>
+<body>
+
+<!-- Column 1 -->
+<div class="col">
+
+  <!-- Splash -->
+  <div class="screen">
+    <div class="titlebar">
+      <div class="dot red"></div><div class="dot yellow"></div><div class="dot green"></div>
+      <span class="title-text">python setup_wizard.py</span>
+    </div>
+    <div class="body">
+      <div class="splash-logo">VEF</div>
+      <div class="splash-sub">VECTOR EMBEDDED FINDER</div>
+      <div class="splash-sub2">local multimodal memory · semantic search</div>
+      <div class="dots">
+        <span style="color:#a78bfa">◆  </span><span style="color:#60a5fa;opacity:.5">◆  </span><span style="color:#34d399;opacity:.25">◆</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Auto-detect -->
+  <div class="screen">
+    <div class="titlebar">
+      <div class="dot red"></div><div class="dot yellow"></div><div class="dot green"></div>
+      <span class="title-text">python setup_wizard.py</span>
+    </div>
+    <div class="body">
+      <div class="gray">scanning your system…</div>
+      <div style="margin-top:10px"></div>
+      <div><span class="teal">✓</span> python3  <span class="dim">→ /Library/Frameworks/Python.framework/…/python3</span></div>
+      <div><span class="teal">✓</span> repo  <span class="dim">→ /Users/aayu/vector-embedded-finder</span></div>
+      <div><span class="teal">✓</span> chromadb</div>
+      <div><span class="teal">✓</span> google-genai</div>
+      <div><span class="teal">✓</span> python-dotenv</div>
+      <div style="margin-top:6px"><span class="yellow-c">!</span> no API key found  <span class="dim">→ we will set it up</span></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Column 2 -->
+<div class="col">
+
+  <!-- API Key -->
+  <div class="screen">
+    <div class="titlebar">
+      <div class="dot red"></div><div class="dot yellow"></div><div class="dot green"></div>
+      <span class="title-text">python setup_wizard.py</span>
+    </div>
+    <div class="body">
+      <div class="step">STEP 1 OF 3  ·  GEMINI API KEY</div>
+      <hr class="divider">
+      <div class="gray">You need a free Gemini key to generate embeddings.</div>
+      <div style="margin-top:10px"><span class="blue">→ Get yours free at:</span> <span style="color:#60a5fa;text-decoration:underline">aistudio.google.com/apikey</span></div>
+      <div class="dim" style="margin-top:2px;font-size:11px">(opening in browser…)</div>
+      <div style="margin-top:14px">Paste your Gemini API key:</div>
+      <div class="input-box" style="margin-top:6px">AIzaSy▌</div>
+      <div class="dim" style="margin-top:10px;font-size:10px">saved to .env · never leaves your machine</div>
+    </div>
+  </div>
+
+  <!-- Folder picker -->
+  <div class="screen">
+    <div class="titlebar">
+      <div class="dot red"></div><div class="dot yellow"></div><div class="dot green"></div>
+      <span class="title-text">python setup_wizard.py</span>
+    </div>
+    <div class="body">
+      <div class="step">STEP 2 OF 3  ·  CHOOSE FOLDERS TO INDEX</div>
+      <hr class="divider">
+      <div class="gray">Space to toggle  ·  Enter to confirm  ·  arrows to move</div>
+      <div style="margin-top:12px"></div>
+      <div class="checkbox-item"><span class="pointer">❯</span> <span class="check-selected">◉</span> <span>~/Photos</span> <span class="dim">(2,847 files)</span></div>
+      <div class="checkbox-item" style="padding-left:14px"><span class="check-unsel">○</span> <span>~/Documents</span> <span class="dim">(1,203 files)</span></div>
+      <div class="checkbox-item" style="padding-left:14px"><span class="check-unsel">○</span> <span>~/Downloads</span> <span class="dim">(429 files)</span></div>
+      <div class="checkbox-item" style="padding-left:14px"><span class="check-unsel">○</span> <span>~/Desktop</span> <span class="dim">(87 files)</span></div>
+      <div class="checkbox-item" style="padding-left:14px"><span class="check-unsel">○</span> <span>~/Movies</span> <span class="dim">(34 files)</span></div>
+      <div class="checkbox-item" style="padding-left:14px; color:#60a5fa">+ enter a custom path…</div>
+      <div style="margin-top:12px"><span class="teal">1 folder selected · ~2,847 files</span></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Column 3 -->
+<div class="col">
+
+  <!-- Indexing -->
+  <div class="screen">
+    <div class="titlebar">
+      <div class="dot red"></div><div class="dot yellow"></div><div class="dot green"></div>
+      <span class="title-text">python setup_wizard.py</span>
+    </div>
+    <div class="body">
+      <div class="step">STEP 3 OF 3  ·  INDEXING</div>
+      <hr class="divider">
+      <div class="progress-bar"><div class="progress-fill" style="width:34%"></div></div>
+      <div><span class="teal">✓</span> team-dinner-2025.jpg</div>
+      <div><span class="teal">✓</span> presentation-draft.pdf</div>
+      <div><span class="teal">✓</span> beach-sunset.png</div>
+      <div><span class="yellow-c">⟳</span> birthday-video-4k.mp4 <span class="dim">(embedding…)</span></div>
+      <div style="margin-top:10px" class="dim">966 / 2,847 files  ·  est. 4m 12s remaining</div>
+      <div style="margin-top:6px;font-size:10px;color:#374151">hit rate limit? pausing and retrying automatically.</div>
+    </div>
+  </div>
+
+  <!-- Done / Raycast card -->
+  <div class="screen">
+    <div class="titlebar">
+      <div class="dot red"></div><div class="dot yellow"></div><div class="dot green"></div>
+      <span class="title-text">python setup_wizard.py</span>
+    </div>
+    <div class="body">
+      <div><span style="color:#34d399;font-size:14px;font-weight:700">✦  2,847 files embedded  ✦</span></div>
+      <div class="dim" style="margin-top:2px;font-size:11px">0 errors  ·  411 already indexed</div>
+      <div class="raycast-card" style="margin-top:12px">
+        <div class="purple bold" style="font-size:10px;letter-spacing:2px;margin-bottom:10px">RAYCAST SETUP</div>
+        <div class="gray" style="font-size:11px;margin-bottom:10px">Raycast → "Memory Search" → Preferences:</div>
+        <div class="field-label">Python Package Path</div>
+        <div class="field-value">/Users/aayu/vector-embedded-finder</div>
+        <div class="field-label">Python Binary</div>
+        <div class="field-value">/Library/Frameworks/Python.framework/…/python3</div>
+        <div class="field-label">Gemini API Key</div>
+        <div class="field-value" style="color:#fbbf24">(set — see .env in repo root)</div>
+      </div>
+      <div class="dim" style="margin-top:10px;font-size:11px">Paths copied to clipboard ✓</div>
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>
