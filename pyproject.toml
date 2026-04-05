@@ -14,5 +14,11 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
+[project.optional-dependencies]
+setup = ["rich>=13.0", "questionary>=2.0"]
+
+[project.scripts]
+vef-setup = "setup_wizard:main"
+
 [tool.setuptools.packages.find]
 include = ["vector_embedded_finder*"]
