@@ -6,6 +6,7 @@ Run: python setup_wizard.py
 
 from __future__ import annotations
 
+import importlib
 import os
 import shutil
 import subprocess
@@ -60,29 +61,26 @@ REPO_ROOT = Path(__file__).parent.resolve()
 ENV_FILE = REPO_ROOT / ".env"
 CONSOLE = Console()
 
-RAINBOW = ["#ff6b9d", "#c084fc", "#818cf8", "#60a5fa", "#34d399", "#fbbf24"]
 C = {
-    "purple": "#a78bfa",
-    "blue": "#60a5fa",
-    "teal": "#34d399",
-    "yellow": "#fbbf24",
-    "pink": "#f472b6",
-    "gray": "#9ca3af",
-    "dim": "#4b5563",
-    "red": "#f87171",
+    "primary": "default",
+    "dim": "#737373",
+    "accent": "#d97757",
+    "success": "green",
+    "error": "red",
+    "warn": "yellow",
 }
 
 QSTYLE = QStyle([
-    ("qmark",       "fg:#a78bfa bold"),
-    ("question",    "fg:#e0e0e0"),
-    ("answer",      "fg:#34d399 bold"),
-    ("pointer",     "fg:#fbbf24 bold"),
-    ("highlighted", "fg:#fbbf24"),
-    ("selected",    "fg:#34d399"),
-    ("separator",   "fg:#4b5563"),
-    ("instruction", "fg:#6b7280 italic"),
-    ("text",        "fg:#e0e0e0"),
-    ("disabled",    "fg:#374151"),
+    ("qmark",       "fg:#737373"),
+    ("question",    "fg:default"),
+    ("answer",      "fg:default bold"),
+    ("pointer",     "fg:#d97757"),
+    ("highlighted", "fg:#d97757"),
+    ("selected",    "fg:default bold"),
+    ("separator",   "fg:#737373"),
+    ("instruction", "fg:#737373"),
+    ("text",        "fg:default"),
+    ("disabled",    "fg:#737373"),
 ])
 
 SUPPORTED_EXT = {
@@ -98,31 +96,22 @@ SUPPORTED_EXT = {
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def wave(text: str, offset: int = 0) -> Text:
-    """Each character cycles through RAINBOW colors — the glowing wave effect."""
-    t = Text()
-    for i, ch in enumerate(text):
-        t.append(ch, style=f"bold {RAINBOW[(i + offset) % len(RAINBOW)]}")
-    return t
-
-
 def ok(msg: str) -> str:
-    return f"[{C['teal']}]✓[/] {msg}"
+    return f"[{C['success']}]✔[/] {msg}"
 
 
 def warn(msg: str) -> str:
-    return f"[{C['yellow']}]![/] {msg}"
+    return f"[{C['warn']}]⚠[/] {msg}"
 
 
 def err_msg(msg: str) -> str:
-    return f"[{C['red']}]✗[/] {msg}"
+    return f"[{C['error']}]✖[/] {msg}"
 
 
 def step_header(n: int, total: int, title: str) -> None:
     CONSOLE.print()
     t = Text()
-    t.append(f"  STEP {n} OF {total}", style=f"bold {C['purple']}")
-    t.append(f"  ·  {title}", style=C["gray"])
+    t.append(f"  {title.upper()}", style=f"bold")
     CONSOLE.print(t)
     CONSOLE.print(f"  [{C['dim']}]{'─' * 52}[/]")
     CONSOLE.print()
@@ -168,49 +157,12 @@ def save_api_key(key: str) -> None:
 
 def screen_splash() -> None:
     CONSOLE.clear()
-
-    # Animate the VEF logo for ~1.5s with a rainbow wave sweep
-    frames = 14
-    logo_chars = list("  V   E   F  ")
-
-    for frame in range(frames):
-        CONSOLE.clear()
-        logo = Text(justify="center")
-        color_i = 0
-        for ch in logo_chars:
-            if ch.strip():
-                logo.append(ch, style=f"bold {RAINBOW[(color_i + frame) % len(RAINBOW)]}")
-                color_i += 1
-            else:
-                logo.append(ch)
-
-        CONSOLE.print()
-        CONSOLE.print()
-        CONSOLE.print()
-        CONSOLE.print(logo, justify="center")
-        CONSOLE.print()
-
-        tagline = Text(justify="center")
-        tagline.append("vector embedded finder", style=C["dim"])
-        CONSOLE.print(tagline)
-
-        sub = Text(justify="center")
-        sub.append("local multimodal memory  ·  semantic search", style=C["dim"])
-        CONSOLE.print(sub)
-        CONSOLE.print()
-
-        # Animated pulse dots
-        dots = Text(justify="center")
-        for j, color in enumerate(RAINBOW[:4]):
-            if j == (frame % 4):
-                dots.append("◆  ", style=f"bold {color}")
-            else:
-                dots.append("◆  ", style=f"dim {color}")
-        CONSOLE.print(dots, justify="center")
-
-        time.sleep(0.11)
-
-    time.sleep(0.25)
+    CONSOLE.print()
+    CONSOLE.print(f"  [{C['dim']}]╭─ vector-embedded-finder setup ─╮[/]")
+    CONSOLE.print(f"  [{C['dim']}]│ local multimodal memory        │[/]")
+    CONSOLE.print(f"  [{C['dim']}]╰────────────────────────────────╯[/]")
+    CONSOLE.print()
+    time.sleep(0.5)
 
 
 # ── Screen 2: Auto-detect ─────────────────────────────────────────────────────
@@ -244,10 +196,7 @@ def screen_detect() -> dict:
     ]
     for display, import_name in pkg_checks:
         try:
-            parts = import_name.split(".")
-            mod = __import__(parts[0])
-            for part in parts[1:]:
-                mod = getattr(mod, part)
+            importlib.import_module(import_name)
             CONSOLE.print(f"  {ok(display)}")
         except ImportError:
             CONSOLE.print(f"  {err_msg(f'{display} not found')}")
@@ -287,14 +236,15 @@ def screen_api_key(detected: dict) -> str:
             "An API key is already configured. Keep it?",
             default=True,
             style=QSTYLE,
+            qmark=">",
         ).ask()
         if keep:
             CONSOLE.print()
             return existing
 
-    CONSOLE.print(f"  [{C['gray']}]You need a free Gemini key to generate embeddings.[/]")
+    CONSOLE.print(f"  [{C['dim']}]You need a free Gemini key to generate embeddings.[/]")
     CONSOLE.print()
-    CONSOLE.print(f"  [{C['blue']}]→ Get yours free at:[/] [underline]https://aistudio.google.com/apikey[/underline]")
+    CONSOLE.print(f"  [{C['accent']}]→ Get yours free at:[/] [underline]https://aistudio.google.com/apikey[/underline]")
     CONSOLE.print()
 
     try:
@@ -309,10 +259,11 @@ def screen_api_key(detected: dict) -> str:
         key = questionary.password(
             "Paste your Gemini API key:",
             style=QSTYLE,
+            qmark=">",
         ).ask()
 
         if not key or not key.strip():
-            CONSOLE.print(f"  [{C['yellow']}]Key can't be empty. Try again.[/]")
+            CONSOLE.print(f"  [{C['warn']}]Key can't be empty. Try again.[/]")
             continue
 
         key = key.strip()
@@ -354,7 +305,7 @@ def screen_folders() -> list[Path]:
     CONSOLE.clear()
     step_header(2, 3, "CHOOSE FOLDERS TO INDEX")
 
-    CONSOLE.print(f"  [{C['gray']}]Space to toggle  ·  Enter to confirm  ·  arrows to move[/]")
+    CONSOLE.print(f"  [{C['dim']}]Space to toggle  ·  Enter to confirm  ·  arrows to move[/]")
     CONSOLE.print()
 
     candidates = [
@@ -389,10 +340,12 @@ def screen_folders() -> list[Path]:
         "Which folders should be indexed?",
         choices=choices,
         style=QSTYLE,
+        qmark=">",
+        pointer="❯",
     ).ask()
 
     if not selected:
-        CONSOLE.print(f"  [{C['yellow']}]No folders selected — skipping indexing.[/]")
+        CONSOLE.print(f"  [{C['warn']}]No folders selected — skipping indexing.[/]")
         return []
 
     folders: list[Path] = []
@@ -401,6 +354,7 @@ def screen_folders() -> list[Path]:
             raw = questionary.text(
                 "Path to index:",
                 style=QSTYLE,
+                qmark=">",
             ).ask()
             if raw and raw.strip():
                 folders.append(Path(raw.strip()))
@@ -409,7 +363,7 @@ def screen_folders() -> list[Path]:
 
     total = sum(counts.get(f, count_supported(f)) for f in folders)
     CONSOLE.print()
-    CONSOLE.print(f"  [{C['teal']}]{len(folders)} folder(s) selected · ~{total:,} files[/]")
+    CONSOLE.print(f"  [{C['success']}]{len(folders)} folder(s) selected · ~{total:,} files[/]")
     CONSOLE.print()
     time.sleep(0.4)
     return folders
@@ -444,7 +398,7 @@ def screen_index(folders: list[Path], api_key: str) -> dict[str, int]:
             pass
 
     if not all_files:
-        CONSOLE.print(f"  [{C['yellow']}]No supported files found in selected folders.[/]")
+        CONSOLE.print(f"  [{C['warn']}]No supported files found in selected folders.[/]")
         return {"embedded": 0, "skipped": 0, "errors": 0}
 
     from vector_embedded_finder.ingest import ingest_file
@@ -453,12 +407,12 @@ def screen_index(folders: list[Path], api_key: str) -> dict[str, int]:
     retry_wait = 60  # seconds for first rate-limit hit
 
     with Progress(
-        SpinnerColumn(style=f"bold {C['purple']}"),
+        SpinnerColumn(style=f"bold {C['dim']}"),
         BarColumn(
             bar_width=36,
             style=C["dim"],
-            complete_style=f"bold {C['purple']}",
-            finished_style=f"bold {C['teal']}",
+            complete_style=f"bold {C['primary']}",
+            finished_style=f"bold {C['success']}",
         ),
         TaskProgressColumn(),
         TextColumn("[dim]{task.description}[/dim]"),
@@ -486,7 +440,7 @@ def screen_index(folders: list[Path], api_key: str) -> dict[str, int]:
                         CONSOLE.print()
                         for remaining in range(retry_wait, 0, -1):
                             countdown = (
-                                f"  [{C['yellow']}]⏳  Rate limited — "
+                                f"  [{C['warn']}]⏳  Rate limited — "
                                 f"retrying in {remaining}s  "
                                 f"(Gemini free tier: ~1,500 req/min)[/]"
                             )
@@ -511,20 +465,15 @@ def screen_done(detected: dict, stats: dict[str, int]) -> None:
     CONSOLE.clear()
     CONSOLE.print()
 
-    # Animate "done" headline with wave sweep
-    for frame in range(10):
-        CONSOLE.clear()
-        CONSOLE.print()
-        headline = wave(f"  ✦  {stats['embedded']:,} files embedded  ✦", offset=frame)
-        CONSOLE.print(headline, justify="left")
-        time.sleep(0.08)
+    headline = f"  ✦  {stats['embedded']:,} files embedded  ✦"
+    CONSOLE.print(headline, justify="left", style="bold")
 
     # Stats line
     parts: list[str] = []
     if stats["skipped"]:
         parts.append(f"[{C['dim']}]{stats['skipped']:,} already indexed[/]")
     if stats["errors"]:
-        parts.append(f"[{C['yellow']}]{stats['errors']:,} errors[/]")
+        parts.append(f"[{C['warn']}]{stats['errors']:,} errors[/]")
     if parts:
         CONSOLE.print(f"  {' · '.join(parts)}")
 
@@ -535,24 +484,24 @@ def screen_done(detected: dict, stats: dict[str, int]) -> None:
     repo_path = detected["repo"]
 
     card = Text()
-    card.append("Open Raycast  →  search ", style=C["gray"])
-    card.append('"Memory Search"', style=f"bold {C['blue']}")
-    card.append("  →  ", style=C["gray"])
-    card.append("Preferences\n\n", style=C["gray"])
+    card.append("Open Raycast  →  search ", style=C["dim"])
+    card.append('"Memory Search"', style=f"bold")
+    card.append("  →  ", style=C["dim"])
+    card.append("Preferences\n\n", style=C["dim"])
 
     fields = [
-        ("Python Package Path", repo_path,    C["teal"]),
-        ("Python Binary",       python_path,  C["teal"]),
-        ("Gemini API Key",      f"(set — see {ENV_FILE.name} in repo root)",  C["yellow"]),
+        ("Python Package Path", repo_path,    "bold"),
+        ("Python Binary",       python_path,  "bold"),
+        ("Gemini API Key",      f"(set — see {ENV_FILE.name} in repo root)",  C["warn"]),
     ]
     for label, value, color in fields:
-        card.append(f"  {label}\n", style=f"dim {C['gray']}")
-        card.append(f"  {value}\n\n", style=f"bold {color}")
+        card.append(f"  {label}\n", style=f"dim")
+        card.append(f"  {value}\n\n", style=color)
 
     CONSOLE.print(Panel(
         card,
-        title=f"[bold {C['purple']}]  RAYCAST SETUP  [/]",
-        border_style=C["purple"],
+        title=f"[bold]  RAYCAST SETUP  [/]",
+        border_style=C["dim"],
         padding=(1, 2),
     ))
 
@@ -561,12 +510,12 @@ def screen_done(detected: dict, stats: dict[str, int]) -> None:
         import pyperclip
         clip = f"Python Package Path: {repo_path}\nPython Binary: {python_path}"
         pyperclip.copy(clip)
-        CONSOLE.print(f"  [{C['dim']}]Paths copied to clipboard ✓[/]")
+        CONSOLE.print(f"  [{C['dim']}]Paths copied to clipboard ✔[/]")
     except Exception:
         pass
 
     CONSOLE.print()
-    CONSOLE.print(f"  [{C['gray']}]You're all set. Open Raycast and search for Memory Search to try it. 🔍[/]")
+    CONSOLE.print(f"  [{C['dim']}]You're all set. Open Raycast and search for Memory Search to try it. 🔍[/]")
     CONSOLE.print()
 
 
@@ -579,7 +528,7 @@ def main() -> None:
         detected = screen_detect()
 
         if "missing_dep" in detected:
-            CONSOLE.print(f"  [{C['yellow']}]Fix missing dependency first:[/]")
+            CONSOLE.print(f"  [{C['warn']}]Fix missing dependency first:[/]")
             CONSOLE.print(f"  [bold]pip install -e .[/bold]")
             CONSOLE.print(f"  Then re-run: [bold]python setup_wizard.py[/bold]\n")
             sys.exit(1)
