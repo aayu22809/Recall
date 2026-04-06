@@ -7,7 +7,12 @@
 
 /* eslint-disable @typescript-eslint/ban-types */
 
-type ExtensionPreferences = {}
+type ExtensionPreferences = {
+  /** Python Package Path - Absolute path to the vector-embedded-finder Python package (the directory containing vector_embedded_finder/) */
+  "pythonPackagePath": string,
+  /** Python Binary - Path to the python3 binary (leave blank for default) */
+  "pythonPath": string
+}
 
 /** Preferences accessible in all the extension's commands */
 declare type Preferences = ExtensionPreferences
