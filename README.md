@@ -1,4 +1,4 @@
-# vector-embedded-finder
+# Recall - The intelligent way to search.
 
 **Local multimodal memory with semantic search.**
 
