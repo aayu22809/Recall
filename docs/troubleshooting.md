@@ -39,7 +39,7 @@ Same root cause as above — mismatched embedding dimensions from provider switc
 Raycast aborts `/search` after 5 s by default. The daemon shouldn't take that long; if it does:
 
 1. Check for concurrent ingest backpressure: `recall status` + `GET /progress`.
-2. Tail the log for slow embedder requests (Gemini rate limits, Ollama CPU).
+2. Tail the log for slow embedder requests (network/API latency or local Ollama CPU contention).
 3. Raise the client timeout: edit `raycast/src/lib/runner.ts` → `abortAfter(5000)`.
 
 If you're on Gemini's free tier, switching to local Ollama (`VEF_EMBEDDING_PROVIDER=ollama`) removes the network round-trip entirely.

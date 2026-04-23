@@ -67,7 +67,7 @@ cp .env.example .env
 Then edit `.env`:
 
 ```ini
-# Option A — local Ollama (recommended, zero network, zero rate limits)
+# Option A — local Ollama (recommended, local-only embedding path)
 VEF_EMBEDDING_PROVIDER=ollama
 VEF_OLLAMA_EMBED_MODEL=nomic-embed-text
 

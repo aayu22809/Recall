@@ -196,7 +196,7 @@ Non-2xx status codes:
 | 422 | Pydantic validation error (body shape) |
 | 500 | Embedder error, ChromaDB error, generic unhandled exception |
 
-## Rate limits
+## Throughput and guardrails
 
 None. The daemon is local; there is no per-client throttling. Internally, ingestion is bounded by `VEF_CONCURRENCY` (default 10) and CPU/RAM guards.
 
