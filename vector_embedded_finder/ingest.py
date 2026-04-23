@@ -1,10 +1,54 @@
-"""File ingestion pipeline - detect type, embed, store."""
+"""File ingestion pipeline — detect type, caption, embed, store."""
 
 from __future__ import annotations
 
+import logging
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Callable
+
+import psutil
 
 from . import config, embedder, store, utils
+
+logger = logging.getLogger(__name__)
+
+
+def _extract_pdf_text(path: Path) -> str:
+    """Extract plain text from a PDF using pypdf. Returns empty string on failure."""
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(str(path))
+        pages: list[str] = []
+        for page in reader.pages:
+            t = page.extract_text() or ""
+            stripped = t.strip()
+            if stripped:
+                pages.append(stripped)
+        return "\n".join(pages)
+    except Exception as e:
+        logger.debug("pypdf extraction failed for %s: %s", path, e)
+        return ""
+
+
+def _cpu_guard() -> None:
+    """Back off until CPU usage is below the guard threshold."""
+    while True:
+        usage = psutil.cpu_percent(interval=0.5)
+        if usage <= config.CPU_GUARD_PERCENT:
+            break
+        logger.debug("CPU %.0f%% > %d%%, backing off 5s", usage, config.CPU_GUARD_PERCENT)
+        time.sleep(5)
+
+
+def _set_low_priority() -> None:
+    """Lower OS scheduling priority for the current thread."""
+    try:
+        os.nice(10)
+    except (AttributeError, PermissionError):
+        pass
 
 
 def ingest_file(
@@ -25,6 +69,16 @@ def ingest_file(
     if store.exists(doc_id):
         return {"status": "skipped", "reason": "already embedded", "id": doc_id, "path": str(path)}
 
+    caption: str | None = None
+
+    if category in ("image", "audio", "video"):
+        _cpu_guard()
+        try:
+            from . import captioner
+            caption = captioner.caption_file(path)
+        except Exception as e:
+            logger.debug("captioner import/call failed for %s: %s", path, e)
+
     if category == "text":
         text = path.read_text(errors="replace")
         if len(text) > 32000:
@@ -32,19 +86,42 @@ def ingest_file(
         embedding = embedder.embed_text(text)
         doc_text = text[:500]
     elif category == "image":
-        embedding = embedder.embed_image(path)
-        doc_text = description or f"Image: {path.name}"
+        if caption:
+            embedding = embedder.embed_text(caption)
+            doc_text = caption[:500]
+        else:
+            embedding = embedder.embed_image(path)
+            doc_text = description or f"Image: {path.name}"
     elif category == "audio":
-        embedding = embedder.embed_audio(path)
-        doc_text = description or f"Audio: {path.name}"
+        if caption:
+            embedding = embedder.embed_text(caption)
+            doc_text = caption[:500]
+        else:
+            embedding = embedder.embed_audio(path)
+            doc_text = description or f"Audio: {path.name}"
     elif category == "video":
-        embedding = embedder.embed_video(path)
-        doc_text = description or f"Video: {path.name}"
+        if caption:
+            embedding = embedder.embed_text(caption)
+            doc_text = caption[:500]
+        else:
+            embedding = embedder.embed_video(path)
+            doc_text = description or f"Video: {path.name}"
     elif category == "document":
-        embedding = embedder.embed_pdf(path)
-        doc_text = description or f"PDF: {path.name}"
+        # Prefer text extraction: semantically searchable + far smaller API payload.
+        extracted_text = _extract_pdf_text(path)
+        if extracted_text:
+            if len(extracted_text) > 32000:
+                extracted_text = extracted_text[:32000]
+            embedding = embedder.embed_text(extracted_text)
+            doc_text = extracted_text[:500]
+        else:
+            # Fallback: binary PDF embedding (scanned documents, image-only PDFs)
+            embedding = embedder.embed_pdf(path)
+            doc_text = description or f"PDF: {path.name}"
     else:
         raise ValueError(f"Unknown category: {category}")
+
+    effective_description = caption or description
 
     metadata = {
         "file_path": str(path),
@@ -53,7 +130,7 @@ def ingest_file(
         "media_category": category,
         "timestamp": utils.now_iso(),
         "source": source,
-        "description": description,
+        "description": effective_description,
         "file_size": path.stat().st_size,
     }
 
@@ -90,29 +167,48 @@ def ingest_text(
     return {"status": "embedded", "id": doc_id, "category": "text"}
 
 
+def _ingest_worker(file_path: Path, source: str) -> dict:
+    """Worker function run inside the thread pool."""
+    _set_low_priority()
+    try:
+        return ingest_file(file_path, source=source)
+    except Exception as e:
+        return {"status": "error", "path": str(file_path), "error": str(e)}
+
+
 def ingest_directory(
     path: str | Path,
     source: str = "manual",
     recursive: bool = True,
-    progress_callback: callable | None = None,
+    progress_callback: Callable[[int, int, dict], None] | None = None,
 ) -> list[dict]:
     path = Path(path).resolve()
-    results = []
     pattern = "**/*" if recursive else "*"
 
     files = [f for f in sorted(path.glob(pattern)) if f.is_file() and utils.is_supported(f)]
     total = len(files)
+    results: list[dict] = [None] * total  # type: ignore[list-item]
+    completed = 0
 
-    for i, file_path in enumerate(files, 1):
-        try:
-            result = ingest_file(file_path, source=source)
-            results.append(result)
+    with ThreadPoolExecutor(max_workers=config.MAX_CONCURRENT_INGEST) as pool:
+        future_to_idx = {
+            pool.submit(_ingest_worker, fp, source): i
+            for i, fp in enumerate(files)
+        }
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                result = future.result()
+            except Exception as e:
+                result = {"status": "error", "path": str(files[idx]), "error": str(e)}
+
+            results[idx] = result
+            completed += 1
 
             if progress_callback:
-                progress_callback(i, total, result)
-        except Exception as e:
-            err = {"status": "error", "path": str(file_path), "error": str(e)}
-            results.append(err)
-            if progress_callback:
-                progress_callback(i, total, err)
+                try:
+                    progress_callback(completed, total, result)
+                except Exception:
+                    pass
+
     return results

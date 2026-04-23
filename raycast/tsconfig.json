@@ -12,7 +12,15 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "paths": {
+      "react": ["./node_modules/@raycast/api/node_modules/@types/react"],
+      "react/*": ["./node_modules/@raycast/api/node_modules/@types/react/*"]
+    },
+    "typeRoots": [
+      "./node_modules/@raycast/api/node_modules/@types",
+      "./node_modules/@types"
+    ]
   },
   "include": ["src/**/*"]
 }

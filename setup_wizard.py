@@ -7,6 +7,7 @@ Run: python setup_wizard.py
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import shutil
 import subprocess
@@ -41,7 +42,6 @@ _ensure_ui_deps()
 # ── Imports (safe after auto-install) ─────────────────────────────────────────
 
 from rich.console import Console  # noqa: E402
-from rich.live import Live  # noqa: E402
 from rich.panel import Panel  # noqa: E402
 from rich.progress import (  # noqa: E402
     BarColumn,
@@ -111,7 +111,7 @@ def err_msg(msg: str) -> str:
 def step_header(n: int, total: int, title: str) -> None:
     CONSOLE.print()
     t = Text()
-    t.append(f"  {title.upper()}", style=f"bold")
+    t.append(f"  {title.upper()}", style="bold")
     CONSOLE.print(t)
     CONSOLE.print(f"  [{C['dim']}]{'─' * 52}[/]")
     CONSOLE.print()
@@ -152,6 +152,24 @@ def save_api_key(key: str) -> None:
         ENV_FILE.write_text(f"GEMINI_API_KEY={key}\n")
 
 
+def _detect_embedding_provider() -> str:
+    provider = os.environ.get("VEF_EMBEDDING_PROVIDER", "").strip().lower()
+    if provider:
+        return provider
+    if ENV_FILE.exists():
+        try:
+            from dotenv import dotenv_values
+
+            provider = (
+                (dotenv_values(ENV_FILE).get("VEF_EMBEDDING_PROVIDER") or "")
+                .strip()
+                .lower()
+            )
+        except Exception:
+            provider = ""
+    return provider or "gemini"
+
+
 # ── Screen 1: Splash ──────────────────────────────────────────────────────────
 
 
@@ -187,13 +205,18 @@ def screen_detect() -> dict:
     result["repo"] = str(REPO_ROOT)
     CONSOLE.print(f"  {ok(f'repo     [dim]→ {REPO_ROOT}[/dim]')}")
 
+    provider = _detect_embedding_provider()
+    result["embedding_provider"] = provider
+    CONSOLE.print(f"  {ok(f'embedding provider  [dim]→ {provider}[/dim]')}")
+
     # Required packages
     time.sleep(0.12)
-    pkg_checks = [
-        ("chromadb",    "chromadb"),
-        ("google-genai", "google.genai"),
-        ("python-dotenv", "dotenv"),
-    ]
+    pkg_checks = [("chromadb", "chromadb"), ("python-dotenv", "dotenv")]
+    if provider == "gemini":
+        pkg_checks.append(("google-genai", "google.genai"))
+    elif provider in {"ollama", "nim"}:
+        pkg_checks.append(("httpx", "httpx"))
+
     for display, import_name in pkg_checks:
         try:
             importlib.import_module(import_name)
@@ -202,21 +225,27 @@ def screen_detect() -> dict:
             CONSOLE.print(f"  {err_msg(f'{display} not found')}")
             result["missing_dep"] = display
 
-    # Existing API key?
-    time.sleep(0.10)
-    existing_key = os.environ.get("GEMINI_API_KEY", "")
-    if not existing_key and ENV_FILE.exists():
-        try:
-            from dotenv import dotenv_values
-            existing_key = dotenv_values(ENV_FILE).get("GEMINI_API_KEY", "")
-        except Exception:
-            pass
+    if provider == "gemini":
+        # Existing API key?
+        time.sleep(0.10)
+        existing_key = os.environ.get("GEMINI_API_KEY", "")
+        if not existing_key and ENV_FILE.exists():
+            try:
+                from dotenv import dotenv_values
 
-    if existing_key:
-        result["existing_key"] = existing_key
-        CONSOLE.print(f"  {warn(f'API key found  [dim]→ you can update or keep it[/dim]')}")
+                existing_key = dotenv_values(ENV_FILE).get("GEMINI_API_KEY", "")
+            except Exception:
+                pass
+
+        if existing_key:
+            result["existing_key"] = existing_key
+            CONSOLE.print(f"  {warn('API key found  [dim]→ you can update or keep it[/dim]')}")
+        else:
+            CONSOLE.print(f"  {warn('no API key found  [dim]→ we will set it up[/dim]')}")
     else:
-        CONSOLE.print(f"  {warn('no API key found  [dim]→ we will set it up[/dim]')}")
+        CONSOLE.print(
+            f"  {ok('API key setup skipped  [dim](non-Gemini provider selected)[/dim]')}"
+        )
 
     CONSOLE.print()
     time.sleep(0.3)
@@ -227,6 +256,17 @@ def screen_detect() -> dict:
 
 
 def screen_api_key(detected: dict) -> str:
+    provider = detected.get("embedding_provider", "gemini")
+    if provider != "gemini":
+        CONSOLE.clear()
+        step_header(1, 3, "EMBEDDING PROVIDER")
+        CONSOLE.print(
+            f"  [{C['dim']}]Using provider: {provider}. Gemini API key step is skipped.[/]"
+        )
+        CONSOLE.print()
+        time.sleep(0.4)
+        return ""
+
     CONSOLE.clear()
     step_header(1, 3, "GEMINI API KEY")
 
@@ -362,6 +402,18 @@ def screen_folders() -> list[Path]:
             folders.append(s)
 
     total = sum(counts.get(f, count_supported(f)) for f in folders)
+
+    # Persist watched directories so daemon can start the filesystem watcher.
+    try:
+        sys.path.insert(0, str(REPO_ROOT))
+        from vector_embedded_finder import config as vef_config
+
+        vef_config.ensure_vef_dirs()
+        watched = [str(f.expanduser().resolve()) for f in folders]
+        vef_config.WATCHED_DIRS_FILE.write_text(json.dumps(watched, indent=2))
+    except Exception as e:
+        CONSOLE.print(f"  {warn(f'Could not save watched dirs config: {str(e)[:80]}')}")
+
     CONSOLE.print()
     CONSOLE.print(f"  [{C['success']}]{len(folders)} folder(s) selected · ~{total:,} files[/]")
     CONSOLE.print()
@@ -379,7 +431,8 @@ def screen_index(folders: list[Path], api_key: str) -> dict[str, int]:
     CONSOLE.clear()
     step_header(3, 3, "INDEXING")
 
-    os.environ["GEMINI_API_KEY"] = api_key
+    if api_key:
+        os.environ["GEMINI_API_KEY"] = api_key
     sys.path.insert(0, str(REPO_ROOT))
 
     # Collect files
@@ -404,7 +457,7 @@ def screen_index(folders: list[Path], api_key: str) -> dict[str, int]:
     from vector_embedded_finder.ingest import ingest_file
 
     stats = {"embedded": 0, "skipped": 0, "errors": 0}
-    retry_wait = 60  # seconds for first rate-limit hit
+    retry_wait = 8  # seconds for first rate-limit hit (doubles each time, max 60)
 
     with Progress(
         SpinnerColumn(style=f"bold {C['dim']}"),
@@ -448,7 +501,7 @@ def screen_index(folders: list[Path], api_key: str) -> dict[str, int]:
                             time.sleep(1)
                         CONSOLE.print(" " * 80, end="\r")
                         progress.start()
-                        retry_wait = min(retry_wait * 2, 300)
+                        retry_wait = min(retry_wait * 2, 60)
                     else:
                         stats["errors"] += 1
                         break
@@ -458,12 +511,372 @@ def screen_index(folders: list[Path], api_key: str) -> dict[str, int]:
     return stats
 
 
+# ── Screen 5b: Ollama Check ───────────────────────────────────────────────────
+
+
+def screen_ollama() -> None:
+    CONSOLE.clear()
+    step_header(4, 8, "LOCAL AI (OPTIONAL)")
+
+    CONSOLE.print(f"  [{C['dim']}]Recall can caption images and transcribe audio/video locally[/]")
+    CONSOLE.print(f"  [{C['dim']}]using Ollama (vision model) + Whisper (speech-to-text).[/]")
+    CONSOLE.print()
+
+    try:
+        import httpx
+        resp = httpx.get("http://localhost:11434/api/tags", timeout=3.0)
+        if resp.status_code == 200:
+            models = resp.json().get("models", [])
+            vlm_keywords = ("llava", "moondream", "bakllava", "minicpm-v")
+            vlm_found = next(
+                (m["name"] for m in models if any(kw in m["name"].lower() for kw in vlm_keywords)),
+                None,
+            )
+            if vlm_found:
+                CONSOLE.print(f"  {ok(f'Ollama running · vision model: {vlm_found}')}")
+            else:
+                CONSOLE.print(f"  {warn('Ollama running but no vision model found')}")
+                CONSOLE.print(f"  [{C['dim']}]  → Run: ollama pull moondream  (tiny, fast)[/]")
+        else:
+            CONSOLE.print(f"  {warn('Ollama not running — image captioning disabled')}")
+            CONSOLE.print(f"  [{C['dim']}]  → Install: https://ollama.ai  then: ollama pull moondream[/]")
+    except Exception:
+        CONSOLE.print(f"  {warn('Ollama not found — image captioning disabled')}")
+        CONSOLE.print(f"  [{C['dim']}]  → Install Ollama from https://ollama.ai[/]")
+
+    try:
+        import faster_whisper  # noqa: F401
+        CONSOLE.print(f"  {ok('faster-whisper available — audio transcription enabled')}")
+    except ImportError:
+        try:
+            import whisper  # noqa: F401
+            CONSOLE.print(f"  {ok('whisper available — audio transcription enabled')}")
+        except ImportError:
+            CONSOLE.print(f"  {warn('No STT backend — audio transcription disabled')}")
+            CONSOLE.print(f"  [{C['dim']}]  → Run: pip install faster-whisper[/]")
+
+    CONSOLE.print()
+    questionary.press_any_key_to_continue("  Press any key to continue…", style=QSTYLE).ask()
+
+
+# ── Screen 5c: Gmail / Google Calendar ────────────────────────────────────────
+
+
+def screen_google() -> bool:
+    """Returns True if Google auth was completed."""
+    CONSOLE.clear()
+    step_header(5, 8, "GMAIL & GOOGLE CALENDAR")
+
+    CONSOLE.print(f"  [{C['dim']}]Connect Google to search emails and calendar events.[/]")
+    CONSOLE.print()
+
+    connect = questionary.confirm(
+        "Connect Gmail and Google Calendar?",
+        default=False,
+        style=QSTYLE,
+        qmark=">",
+    ).ask()
+
+    if not connect:
+        CONSOLE.print(f"  [{C['dim']}]Skipped — you can run vef-setup again to connect later.[/]")
+        CONSOLE.print()
+        time.sleep(0.4)
+        return False
+
+    # Check for OAuth client file
+    from pathlib import Path as _Path
+    creds_dir = _Path.home() / ".vef" / "credentials"
+    creds_dir.mkdir(parents=True, exist_ok=True)
+    oauth_client = creds_dir / "gmail_oauth_client.json"
+    legacy_oauth_client = creds_dir / "gmail_oauth_client.json.json"
+
+    if not oauth_client.exists() and legacy_oauth_client.exists():
+        try:
+            legacy_oauth_client.rename(oauth_client)
+            CONSOLE.print(
+                f"  [{C['dim']}]Found legacy OAuth filename and renamed it to gmail_oauth_client.json.[/]"
+            )
+            CONSOLE.print()
+        except OSError:
+            oauth_client = legacy_oauth_client
+
+    if not oauth_client.exists():
+        CONSOLE.print()
+        CONSOLE.print(f"  [{C['warn']}]You need a Google OAuth 2.0 client credentials file.[/]")
+        CONSOLE.print(f"  [{C['dim']}]Steps:[/]")
+        CONSOLE.print(f"  [{C['dim']}]  1. Go to https://console.cloud.google.com[/]")
+        CONSOLE.print(f"  [{C['dim']}]  2. Create a project → APIs & Services → Credentials[/]")
+        CONSOLE.print(f"  [{C['dim']}]  3. Create OAuth 2.0 Client ID → Desktop app[/]")
+        CONSOLE.print(f"  [{C['dim']}]  4. Download JSON → save to:[/]")
+        CONSOLE.print(f"  [bold]     {oauth_client}[/bold]")
+        CONSOLE.print()
+        try:
+            webbrowser.open("https://console.cloud.google.com/apis/credentials")
+        except Exception:
+            pass
+
+        questionary.press_any_key_to_continue(
+            "  Paste the file there, then press any key…", style=QSTYLE
+        ).ask()
+
+        if not oauth_client.exists():
+            CONSOLE.print(f"  {warn('File not found — skipping Google auth')}")
+            CONSOLE.print()
+            return False
+
+    CONSOLE.print()
+    CONSOLE.print(f"  [{C['dim']}]Opening browser for Google auth…[/]")
+    CONSOLE.print()
+
+    try:
+        sys.path.insert(0, str(REPO_ROOT))
+        from vector_embedded_finder.connectors.gmail import GmailConnector
+        from vector_embedded_finder.connectors.gcal import GCalConnector
+        c = GCalConnector()
+        c.authenticate()
+        gmail_ready = GmailConnector().is_authenticated()
+        gcal_ready = GCalConnector().is_authenticated()
+        if gmail_ready and gcal_ready:
+            CONSOLE.print(f"  {ok('Google auth successful — Gmail + Calendar connected')}")
+            CONSOLE.print(f"  [{C['dim']}]Run [bold]vef-daemon sync gmail[/bold] to force first email sync now.[/]")
+            CONSOLE.print()
+            time.sleep(0.4)
+            return True
+        CONSOLE.print(
+            f"  {warn('OAuth flow finished but credentials were not saved correctly. Re-run auth after confirming gmail_oauth_client.json is valid.')}"
+        )
+        CONSOLE.print()
+        return False
+    except Exception as e:
+        CONSOLE.print(f"  {err_msg(f'Auth failed: {str(e)[:100]}')}")
+        CONSOLE.print(
+            f"  [{C['dim']}]If browser auth failed, manually verify [bold]{oauth_client}[/bold] and run:[/]"
+        )
+        CONSOLE.print("  [bold]python -m vector_embedded_finder.connectors.gmail authenticate[/bold]")
+        CONSOLE.print()
+        return False
+
+
+# ── Screen 5d: cal.ai ─────────────────────────────────────────────────────────
+
+
+def screen_calai() -> bool:
+    CONSOLE.clear()
+    step_header(6, 8, "CAL.AI")
+
+    CONSOLE.print(f"  [{C['dim']}]Connect cal.ai to search your scheduled meetings.[/]")
+    CONSOLE.print()
+
+    connect = questionary.confirm(
+        "Connect cal.ai?",
+        default=False,
+        style=QSTYLE,
+        qmark=">",
+    ).ask()
+
+    if not connect:
+        CONSOLE.print(f"  [{C['dim']}]Skipped.[/]")
+        time.sleep(0.3)
+        return False
+
+    CONSOLE.print()
+    CONSOLE.print(f"  [{C['accent']}]→ Get your API key at:[/] [underline]https://app.cal.com/settings/developer/api-keys[/underline]")
+    CONSOLE.print()
+    try:
+        webbrowser.open("https://app.cal.com/settings/developer/api-keys")
+    except Exception:
+        pass
+
+    key = questionary.password("Paste your cal.ai API key:", style=QSTYLE, qmark=">").ask()
+    if not key or not key.strip():
+        CONSOLE.print(f"  {warn('No key entered — skipping')}")
+        return False
+
+    try:
+        sys.path.insert(0, str(REPO_ROOT))
+        from vector_embedded_finder.connectors.calai import CalAIConnector
+        c = CalAIConnector()
+        c.set_api_key(key.strip())
+        CONSOLE.print(f"  {ok('cal.ai API key saved')}")
+        time.sleep(0.3)
+        return True
+    except Exception as e:
+        CONSOLE.print(f"  {err_msg(str(e)[:100])}")
+        return False
+
+
+# ── Screen 5e: LMS ────────────────────────────────────────────────────────────
+
+
+def screen_lms() -> bool:
+    CONSOLE.clear()
+    step_header(7, 8, "LEARNING MANAGEMENT SYSTEM")
+
+    lms = questionary.select(
+        "Which LMS do you use?",
+        choices=["Canvas", "Schoology", "Neither"],
+        style=QSTYLE,
+        qmark=">",
+    ).ask()
+
+    if lms == "Neither":
+        CONSOLE.print(f"  [{C['dim']}]Skipped.[/]")
+        time.sleep(0.3)
+        return False
+
+    if lms == "Canvas":
+        CONSOLE.print()
+        CONSOLE.print(f"  [{C['dim']}]Canvas API token: Account → Settings → Approved Integrations → New Access Token[/]")
+        CONSOLE.print()
+        base_url = questionary.text(
+            "Canvas base URL (e.g. https://canvas.instructure.com):",
+            style=QSTYLE, qmark=">",
+        ).ask()
+        token = questionary.password("Canvas API token:", style=QSTYLE, qmark=">").ask()
+
+        if not base_url or not token:
+            CONSOLE.print(f"  {warn('Missing info — skipping')}")
+            return False
+        try:
+            sys.path.insert(0, str(REPO_ROOT))
+            from vector_embedded_finder.connectors.canvas import CanvasConnector
+            c = CanvasConnector()
+            c.set_credentials(token.strip(), base_url.strip())
+            CONSOLE.print(f"  {ok('Canvas credentials saved')}")
+            time.sleep(0.3)
+            return True
+        except Exception as e:
+            CONSOLE.print(f"  {err_msg(str(e)[:100])}")
+            return False
+
+    # Schoology
+    CONSOLE.print()
+    CONSOLE.print(f"  [{C['dim']}]Schoology: Settings → API Access → Consumer Key/Secret[/]")
+    CONSOLE.print()
+    base_url = questionary.text(
+        "Schoology API base URL (default: https://api.schoology.com/v1):",
+        default="https://api.schoology.com/v1",
+        style=QSTYLE, qmark=">",
+    ).ask()
+    key = questionary.password("Consumer key:", style=QSTYLE, qmark=">").ask()
+    secret = questionary.password("Consumer secret:", style=QSTYLE, qmark=">").ask()
+
+    if not key or not secret:
+        CONSOLE.print(f"  {warn('Missing credentials — skipping')}")
+        return False
+    try:
+        sys.path.insert(0, str(REPO_ROOT))
+        from vector_embedded_finder.connectors.schoology import SchoologyConnector
+        c = SchoologyConnector()
+        c.set_credentials(key.strip(), secret.strip(), base_url.strip())
+        CONSOLE.print(f"  {ok('Schoology credentials saved')}")
+        time.sleep(0.3)
+        return True
+    except Exception as e:
+        CONSOLE.print(f"  {err_msg(str(e)[:100])}")
+        return False
+
+
+# ── Screen 5f: Initial connector sync ─────────────────────────────────────────
+
+
+def screen_connector_sync(api_key: str, google_ok: bool, calai_ok: bool, lms_ok: bool) -> dict:
+    """Run initial sync for all connected sources with a unified progress bar."""
+    if not (google_ok or calai_ok or lms_ok):
+        return {}
+
+    CONSOLE.clear()
+    step_header(8, 8, "INITIAL SYNC")
+
+    os.environ["GEMINI_API_KEY"] = api_key
+    sys.path.insert(0, str(REPO_ROOT))
+
+    stats: dict[str, dict] = {}
+
+    with Progress(
+        SpinnerColumn(style=f"bold {C['dim']}"),
+        BarColumn(bar_width=36, style=C["dim"], complete_style=f"bold {C['primary']}", finished_style=f"bold {C['success']}"),
+        TaskProgressColumn(),
+        TextColumn("[dim]{task.description}[/dim]"),
+        TimeRemainingColumn(),
+        console=CONSOLE,
+        refresh_per_second=8,
+    ) as progress:
+
+        if google_ok:
+            from vector_embedded_finder.connectors.gmail import GmailConnector
+            from vector_embedded_finder.connectors.gcal import GCalConnector
+
+            gmail_task = progress.add_task("Gmail sync…", total=None)
+            try:
+                gc = GmailConnector()
+                if gc.is_authenticated():
+                    results = gc.sync(since=None, progress_cb=lambda c, t, _: progress.update(gmail_task, total=t, completed=c, description=f"Gmail {c}/{t}"))
+                    embedded = sum(1 for r in results if r.get("status") == "embedded")
+                    stats["gmail"] = {"embedded": embedded, "total": len(results)}
+                    progress.update(gmail_task, description=f"Gmail ✓ {embedded} threads")
+            except Exception as e:
+                progress.update(gmail_task, description=f"Gmail error: {str(e)[:50]}")
+
+            gcal_task = progress.add_task("Calendar sync…", total=None)
+            try:
+                gcc = GCalConnector()
+                if gcc.is_authenticated():
+                    results = gcc.sync(since=None, progress_cb=lambda c, t, _: progress.update(gcal_task, total=t, completed=c, description=f"Calendar {c}/{t}"))
+                    embedded = sum(1 for r in results if r.get("status") == "embedded")
+                    stats["gcal"] = {"embedded": embedded, "total": len(results)}
+                    progress.update(gcal_task, description=f"Calendar ✓ {embedded} events")
+            except Exception as e:
+                progress.update(gcal_task, description=f"Calendar error: {str(e)[:50]}")
+
+        if calai_ok:
+            from vector_embedded_finder.connectors.calai import CalAIConnector
+            calai_task = progress.add_task("cal.ai sync…", total=None)
+            try:
+                cc = CalAIConnector()
+                if cc.is_authenticated():
+                    results = cc.sync(since=None, progress_cb=lambda c, t, _: progress.update(calai_task, total=t, completed=c, description=f"cal.ai {c}/{t}"))
+                    embedded = sum(1 for r in results if r.get("status") == "embedded")
+                    stats["calai"] = {"embedded": embedded, "total": len(results)}
+                    progress.update(calai_task, description=f"cal.ai ✓ {embedded} bookings")
+            except Exception as e:
+                progress.update(calai_task, description=f"cal.ai error: {str(e)[:50]}")
+
+        if lms_ok:
+            lms_task = progress.add_task("LMS sync…", total=None)
+            for ConnClass, name in [
+                ("canvas", "Canvas"),
+                ("schoology", "Schoology"),
+            ]:
+                try:
+                    if ConnClass == "canvas":
+                        from vector_embedded_finder.connectors.canvas import CanvasConnector
+                        lc = CanvasConnector()
+                    else:
+                        from vector_embedded_finder.connectors.schoology import SchoologyConnector
+                        lc = SchoologyConnector()
+                    if lc.is_authenticated():
+                        results = lc.sync(since=None, progress_cb=lambda c, t, _: progress.update(lms_task, total=t, completed=c, description=f"{name} {c}/{t}"))
+                        embedded = sum(1 for r in results if r.get("status") == "embedded")
+                        stats[ConnClass] = {"embedded": embedded, "total": len(results)}
+                        progress.update(lms_task, description=f"{name} ✓ {embedded} items")
+                except Exception as e:
+                    progress.update(lms_task, description=f"{name} error: {str(e)[:50]}")
+
+    CONSOLE.print()
+    CONSOLE.print(f"  [{C['success']}]Connector sync complete.[/]")
+    CONSOLE.print()
+    time.sleep(0.5)
+    return stats
+
+
 # ── Screen 6: Done + Raycast Card ─────────────────────────────────────────────
 
 
 def screen_done(detected: dict, stats: dict[str, int]) -> None:
     CONSOLE.clear()
     CONSOLE.print()
+    provider = str(detected.get("embedding_provider", "gemini")).strip().lower() or "gemini"
 
     headline = f"  ✦  {stats['embedded']:,} files embedded  ✦"
     CONSOLE.print(headline, justify="left", style="bold")
@@ -485,22 +898,31 @@ def screen_done(detected: dict, stats: dict[str, int]) -> None:
 
     card = Text()
     card.append("Open Raycast  →  search ", style=C["dim"])
-    card.append('"Memory Search"', style=f"bold")
+    card.append('"Memory Search"', style="bold")
     card.append("  →  ", style=C["dim"])
     card.append("Preferences\n\n", style=C["dim"])
 
     fields = [
         ("Python Package Path", repo_path,    "bold"),
         ("Python Binary",       python_path,  "bold"),
-        ("Gemini API Key",      f"(set — see {ENV_FILE.name} in repo root)",  C["warn"]),
+        (
+            "Embedding Provider",
+            provider,
+            "bold",
+        ),
+        (
+            "Gemini API Key",
+            f"(set — see {ENV_FILE.name} in repo root)" if provider == "gemini" else "(not required)",
+            C["warn"] if provider == "gemini" else C["dim"],
+        ),
     ]
     for label, value, color in fields:
-        card.append(f"  {label}\n", style=f"dim")
+        card.append(f"  {label}\n", style="dim")
         card.append(f"  {value}\n\n", style=color)
 
     CONSOLE.print(Panel(
         card,
-        title=f"[bold]  RAYCAST SETUP  [/]",
+        title="[bold]  RAYCAST SETUP  [/]",
         border_style=C["dim"],
         padding=(1, 2),
     ))
@@ -512,7 +934,7 @@ def screen_done(detected: dict, stats: dict[str, int]) -> None:
         pyperclip.copy(clip)
         CONSOLE.print(f"  [{C['dim']}]Paths copied to clipboard ✔[/]")
     except Exception:
-        pass
+        CONSOLE.print(f"  [{C['dim']}]Tip: copy paths above manually into Raycast preferences.[/]")
 
     CONSOLE.print()
     CONSOLE.print(f"  [{C['dim']}]You're all set. Open Raycast and search for Memory Search to try it. 🔍[/]")
@@ -529,13 +951,18 @@ def main() -> None:
 
         if "missing_dep" in detected:
             CONSOLE.print(f"  [{C['warn']}]Fix missing dependency first:[/]")
-            CONSOLE.print(f"  [bold]pip install -e .[/bold]")
-            CONSOLE.print(f"  Then re-run: [bold]python setup_wizard.py[/bold]\n")
+            CONSOLE.print("  [bold]pip install -e .[/bold]")
+            CONSOLE.print("  Then re-run: [bold]python setup_wizard.py[/bold]\n")
             sys.exit(1)
 
         api_key = screen_api_key(detected)
         folders = screen_folders()
         stats = screen_index(folders, api_key)
+        screen_ollama()
+        google_ok = screen_google()
+        calai_ok = screen_calai()
+        lms_ok = screen_lms()
+        screen_connector_sync(api_key, google_ok, calai_ok, lms_ok)
         screen_done(detected, stats)
 
     except KeyboardInterrupt:

@@ -1,12 +1,48 @@
-.env
-data/
+# ─── Python ─────────────────────────────────────────
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 *.egg-info/
 dist/
 build/
-.DS_Store
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
 
-# Raycast
+# ─── Environment / secrets ──────────────────────────
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# ─── ChromaDB persistence ───────────────────────────
+data/
+~/.vef/
+
+# ─── macOS / editors ────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+
+# ─── Raycast ────────────────────────────────────────
 raycast/node_modules/
 raycast/dist/
+raycast/*.tgz
+
+# ─── Root-level JS scratch (composio client etc.) ──
+node_modules/
+package.json
+package-lock.json
+
+# ─── Nested experimental projects (have own git) ────
+moss/
+
+# ─── Generated analysis artifacts ───────────────────
+graphify-out/
+
+# ─── Tool caches / planning scratch ─────────────────
+.cursor/
+.context/
+context/

@@ -1,11 +1,13 @@
 {
   "$schema": "https://www.raycast.com/schemas/extension.json",
-  "name": "vector-embedded-finder",
-  "title": "Vector Embedded Finder",
-  "description": "Search your local multimodal memory powered by Gemini Embedding 2",
+  "name": "recall",
+  "title": "Recall",
+  "description": "Search local files and connected apps with semantic memory",
   "icon": "command-icon.png",
   "author": "hughp",
-  "categories": ["Productivity"],
+  "categories": [
+    "Productivity"
+  ],
   "license": "MIT",
   "preferences": [
     {
@@ -24,20 +26,55 @@
       "required": false,
       "default": "python3",
       "placeholder": "python3"
+    },
+    {
+      "name": "geminiApiKey",
+      "title": "Gemini API Key",
+      "description": "Your Gemini API key (stored in macOS Keychain). Required when not using the setup wizard.",
+      "type": "password",
+      "required": false
     }
   ],
   "commands": [
     {
       "name": "search-memory",
       "title": "Memory Search",
-      "subtitle": "Vector Embedded Finder",
+      "subtitle": "Recall",
       "description": "Search images, audio, PDFs and text with natural language",
+      "mode": "view"
+    },
+    {
+      "name": "email-search",
+      "title": "Email Search",
+      "subtitle": "Recall",
+      "description": "Search Gmail threads in your local index",
+      "mode": "view"
+    },
+    {
+      "name": "calendar-today",
+      "title": "Upcoming Events",
+      "subtitle": "Recall",
+      "description": "Show upcoming events from connected calendars",
+      "mode": "view"
+    },
+    {
+      "name": "manage",
+      "title": "Manage Recall",
+      "subtitle": "Recall",
+      "description": "Connectors, sync progress, folder indexing, and API key setup",
+      "mode": "view"
+    },
+    {
+      "name": "sync-status",
+      "title": "Sync Status",
+      "subtitle": "Recall",
+      "description": "View connector auth/sync status and trigger sync",
       "mode": "view"
     },
     {
       "name": "open-memory",
       "title": "Memory Open",
-      "subtitle": "Vector Embedded Finder",
+      "subtitle": "Recall",
       "description": "Search and open the best matching file",
       "mode": "no-view",
       "arguments": [
@@ -56,7 +93,7 @@
   },
   "devDependencies": {
     "@types/node": "20.8.10",
-    "@types/react": "18.3.3",
+    "@types/react": "^18.3.28",
     "typescript": "^5.4.5"
   },
   "scripts": {

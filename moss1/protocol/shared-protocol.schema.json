@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Moss Shared Integration Protocol",
+  "type": "object",
+  "required": ["name", "operations"],
+  "properties": {
+    "name": { "type": "string" },
+    "operations": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["op", "id", "namespace", "content", "embedding"],
+            "properties": {
+              "op": { "const": "insert" },
+              "id": { "type": "string" },
+              "namespace": { "type": "string" },
+              "content": { "type": "string" },
+              "embedding": { "type": "array", "items": { "type": "number" } }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["op", "embedding", "top_k", "expect_min_results"],
+            "properties": {
+              "op": { "const": "search" },
+              "embedding": { "type": "array", "items": { "type": "number" } },
+              "top_k": { "type": "integer", "minimum": 1 },
+              "expect_min_results": { "type": "integer", "minimum": 0 }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["op", "id"],
+            "properties": {
+              "op": { "const": "delete" },
+              "id": { "type": "string" }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+

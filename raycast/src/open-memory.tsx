@@ -1,67 +1,67 @@
-import { showHUD, open, getPreferenceValues, openExtensionPreferences } from "@raycast/api";
-import { execSync } from "child_process";
+import { showHUD, open, openExtensionPreferences } from "@raycast/api";
 import { existsSync } from "fs";
-import { join } from "path";
-
-interface Preferences {
-  pythonPackagePath: string;
-  pythonPath?: string;
-}
-
-interface SearchResult {
-  file_path: string;
-  file_name: string;
-  similarity: number;
-  media_category: string;
-}
+import { runSearch } from "./lib/runner";
 
 export default async function OpenMemory(props: { arguments: { query: string } }) {
   const { query } = props.arguments;
-  const prefs = getPreferenceValues<Preferences>();
-  const python = prefs.pythonPath || "python3";
-  const pkgPath = prefs.pythonPackagePath;
-
-  if (!pkgPath || !pkgPath.trim()) {
-    await showHUD("⚠ Set Python Package Path in extension preferences");
-    await openExtensionPreferences();
-    return;
-  }
-
-  if (!existsSync(join(pkgPath, "vector_embedded_finder"))) {
-    await showHUD(`⚠ vector_embedded_finder/ not found in ${pkgPath}`);
-    await openExtensionPreferences();
+  if (!query?.trim()) {
+    await showHUD("⚠ No query provided");
     return;
   }
 
   try {
-    const output = execSync(
-      `${python} -c "
-import json, sys
-sys.path.insert(0, '${pkgPath}')
-from vector_embedded_finder.search import search
-results = search('''${query.replace(/'/g, "\\'")}''', n_results=1)
-print(json.dumps(results))
-"`,
-      { timeout: 10000, encoding: "utf-8" },
-    );
+    const results = await runSearch(query, { nResults: 1 });
 
-    const results: SearchResult[] = JSON.parse(output.trim());
+    if (results.length === 0) {
+      await showHUD(`No matching result for: ${query}`);
+      return;
+    }
 
-    if (results.length > 0 && results[0].file_path && existsSync(results[0].file_path)) {
-      const r = results[0];
-      const score = (r.similarity * 100).toFixed(1);
+    const r = results[0];
+    const score = (r.similarity * 100).toFixed(1);
+
+    // Local file
+    if (r.file_path && !r.file_path.includes("://") && existsSync(r.file_path)) {
       await open(r.file_path);
       await showHUD(`Opened: ${r.file_name} (${score}% match)`);
-    } else {
-      await showHUD(`No matching file found for: ${query}`);
+      return;
     }
-  } catch (e: unknown) {
-    const stderr = e instanceof Error && "stderr" in e ? String((e as { stderr: unknown }).stderr) : "";
-    if (stderr.includes("No module named")) {
-      const match = stderr.match(/No module named '([^']+)'/);
-      await showHUD(`⚠ Missing Python dependency: ${match?.[1] || "unknown"} — run "pip install -e ." in repo root`);
+
+    // Gmail
+    if (r.source === "gmail" && r.metadata?.["thread_id"]) {
+      const url = `https://mail.google.com/mail/u/0/#all/${r.metadata["thread_id"]}`;
+      await open(url);
+      await showHUD(`Opened Gmail: ${r.file_name} (${score}% match)`);
+      return;
+    }
+
+    // Google Calendar
+    if (r.source === "gcal" && r.metadata?.["event_id"]) {
+      const url = `https://calendar.google.com/calendar/r/eventedit/${r.metadata["event_id"]}`;
+      await open(url);
+      await showHUD(`Opened Calendar: ${r.file_name} (${score}% match)`);
+      return;
+    }
+
+    // Canvas / Schoology — open URL from metadata
+    if ((r.source === "canvas" || r.source === "schoology") && r.metadata?.["url"]) {
+      await open(r.metadata["url"] as string);
+      await showHUD(`Opened ${r.source}: ${r.file_name} (${score}% match)`);
+      return;
+    }
+
+    // Fallback: copy preview to clipboard
+    await showHUD(`Found: ${r.file_name} (${score}% match) — no openable URL`);
+
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("GEMINI_API_KEY") || msg.includes("AUTH_ERROR")) {
+      await showHUD("⚠ API key missing — check extension preferences");
+      await openExtensionPreferences();
+    } else if (msg.includes("daemon") || msg.includes("DAEMON")) {
+      await showHUD("⚠ Daemon not running — run 'vef-daemon start' in terminal");
     } else {
-      await showHUD("⚠ Search failed — run \"pip install -e .\" in the vector-embedded-finder repo");
+      await showHUD(`⚠ Search failed: ${msg.slice(0, 60)}`);
     }
   }
 }
