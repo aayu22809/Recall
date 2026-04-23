@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vector-embedded-finder"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local multimodal memory with semantic search, powered by Gemini Embedding 2 and ChromaDB"
 requires-python = ">=3.11"
 license = "MIT"
@@ -12,13 +12,40 @@ dependencies = [
     "google-genai>=1.0.0",
     "chromadb>=0.6.0",
     "python-dotenv>=1.0",
+    "fastmcp>=0.1.0",
+    # Phase 1 — daemon + HTTP
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "httpx>=0.27.0",
+    # Phase 2 — connectors + watcher
+    "watchdog>=4.0.0",
+    "psutil>=5.9.0",
+    "google-auth>=2.0.0",
+    "google-auth-oauthlib>=1.0.0",
+    "google-api-python-client>=2.0.0",
+    "requests-oauthlib>=1.3.0",
+    "beautifulsoup4>=4.12.0",
+    "pypdf>=4.0.0",
 ]
 
 [project.optional-dependencies]
 setup = ["rich>=13.0", "questionary>=2.0"]
+local-ai = ["faster-whisper>=1.0.0"]
+canvas = ["canvasapi>=3.0.0"]
+google = ["google-api-python-client>=2.0.0", "google-auth-oauthlib>=1.0.0"]
+notion = ["notion-client>=2.2.1"]
+github = ["PyGithub>=2.3.0"]
+slack = ["slack-sdk>=3.31.0"]
 
 [project.scripts]
 vef-setup = "setup_wizard:main"
+vef-daemon = "vector_embedded_finder.daemon:main"
+recall = "vector_embedded_finder.cli:main"
+trayce = "vector_embedded_finder.cli:main"
+recall-mcp = "vector_embedded_finder.mcp_server:main"
+
+[tool.setuptools]
+py-modules = ["setup_wizard"]
 
 [tool.setuptools.packages.find]
 include = ["vector_embedded_finder*"]
