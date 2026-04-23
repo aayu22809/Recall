@@ -3,12 +3,12 @@ name: moss-ci
 on:
   push:
     paths:
-      - "moss/**"
+      - "moss1/**"
       - "docs/architecture/local-first-semantic-layer.md"
       - ".github/workflows/moss-ci.yml"
   pull_request:
     paths:
-      - "moss/**"
+      - "moss1/**"
       - "docs/architecture/local-first-semantic-layer.md"
       - ".github/workflows/moss-ci.yml"
 
@@ -23,7 +23,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Test moss-core
         run: |
-          cd moss
+          cd moss1
           cargo test -p moss-core
 
   wasm:
@@ -35,7 +35,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - name: Build wasm target
         run: |
-          cd moss
+          cd moss1
           cargo build -p moss-wasm --target wasm32-unknown-unknown
 
   browser-sdk:
@@ -47,7 +47,7 @@ jobs:
           node-version: 20
       - name: Typecheck browser SDK
         run: |
-          cd moss/sdk/browser
+          cd moss1/sdk/browser
           npm install
           npm run typecheck
 
