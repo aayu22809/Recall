@@ -11,7 +11,9 @@ type ExtensionPreferences = {
   /** Python Package Path - Absolute path to the vector-embedded-finder Python package (the directory containing vector_embedded_finder/) */
   "pythonPackagePath": string,
   /** Python Binary - Path to the python3 binary (leave blank for default) */
-  "pythonPath": string
+  "pythonPath": string,
+  /** Gemini API Key - Your Gemini API key (stored in macOS Keychain). Required when not using the setup wizard. */
+  "geminiApiKey"?: string
 }
 
 /** Preferences accessible in all the extension's commands */
@@ -20,6 +22,14 @@ declare type Preferences = ExtensionPreferences
 declare namespace Preferences {
   /** Preferences accessible in the `search-memory` command */
   export type SearchMemory = ExtensionPreferences & {}
+  /** Preferences accessible in the `email-search` command */
+  export type EmailSearch = ExtensionPreferences & {}
+  /** Preferences accessible in the `calendar-today` command */
+  export type CalendarToday = ExtensionPreferences & {}
+  /** Preferences accessible in the `manage` command */
+  export type Manage = ExtensionPreferences & {}
+  /** Preferences accessible in the `sync-status` command */
+  export type SyncStatus = ExtensionPreferences & {}
   /** Preferences accessible in the `open-memory` command */
   export type OpenMemory = ExtensionPreferences & {}
 }
@@ -27,6 +37,14 @@ declare namespace Preferences {
 declare namespace Arguments {
   /** Arguments passed to the `search-memory` command */
   export type SearchMemory = {}
+  /** Arguments passed to the `email-search` command */
+  export type EmailSearch = {}
+  /** Arguments passed to the `calendar-today` command */
+  export type CalendarToday = {}
+  /** Arguments passed to the `manage` command */
+  export type Manage = {}
+  /** Arguments passed to the `sync-status` command */
+  export type SyncStatus = {}
   /** Arguments passed to the `open-memory` command */
   export type OpenMemory = {
   /** Search query */
