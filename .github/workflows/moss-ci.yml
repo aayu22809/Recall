@@ -1,0 +1,53 @@
+name: moss-ci
+
+on:
+  push:
+    paths:
+      - "moss/**"
+      - "docs/architecture/local-first-semantic-layer.md"
+      - ".github/workflows/moss-ci.yml"
+  pull_request:
+    paths:
+      - "moss/**"
+      - "docs/architecture/local-first-semantic-layer.md"
+      - ".github/workflows/moss-ci.yml"
+
+jobs:
+  core:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test moss-core
+        run: |
+          cd moss
+          cargo test -p moss-core
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Build wasm target
+        run: |
+          cd moss
+          cargo build -p moss-wasm --target wasm32-unknown-unknown
+
+  browser-sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Typecheck browser SDK
+        run: |
+          cd moss/sdk/browser
+          npm install
+          npm run typecheck
+
