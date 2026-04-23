@@ -1,0 +1,36 @@
+{
+  "name": "mvp-smoke",
+  "operations": [
+    {
+      "op": "insert",
+      "id": "doc-1",
+      "namespace": "files",
+      "content": "Stanford application timeline and checklist",
+      "embedding": [0.91, 0.12, 0.33, 0.44]
+    },
+    {
+      "op": "insert",
+      "id": "doc-2",
+      "namespace": "gmail",
+      "content": "Advisor email about poster revisions",
+      "embedding": [0.89, 0.11, 0.31, 0.46]
+    },
+    {
+      "op": "search",
+      "embedding": [0.9, 0.1, 0.3, 0.45],
+      "top_k": 5,
+      "expect_min_results": 2
+    },
+    {
+      "op": "delete",
+      "id": "doc-2"
+    },
+    {
+      "op": "search",
+      "embedding": [0.9, 0.1, 0.3, 0.45],
+      "top_k": 5,
+      "expect_min_results": 1
+    }
+  ]
+}
+
