@@ -2,13 +2,14 @@
   "$schema": "https://www.raycast.com/schemas/extension.json",
   "name": "recall",
   "title": "Recall",
-  "description": "Search local files and connected apps with semantic memory",
+  "description": "Private local search across your files, email, calendar, and notes",
   "icon": "command-icon.png",
-  "author": "hughp",
+  "author": "aayu22809",
   "categories": [
     "Productivity"
   ],
   "license": "MIT",
+  "platforms": ["macOS"],
   "preferences": [
     {
       "name": "pythonPackagePath",
@@ -100,6 +101,7 @@
     "build": "ray build",
     "dev": "ray develop",
     "fix-lint": "ray lint --fix",
-    "lint": "ray lint"
+    "lint": "ray lint",
+    "publish": "ray publish"
   }
 }

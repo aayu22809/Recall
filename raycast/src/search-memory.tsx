@@ -171,6 +171,19 @@ export default function SearchMemory() {
       searchBarAccessory={sourceAccessory}
       onSearchTextChange={handleSearchChange}
     >
+      {searchText.trim() === "" && !isLoading ? (
+        <Grid.EmptyView
+          icon={Icon.MagnifyingGlass}
+          title="Search your digital memory"
+          description="Type to search files, emails, calendar events, and more"
+          actions={
+            <ActionPanel>
+              <Action title="Open Extension Preferences" icon={Icon.Gear} onAction={openExtensionPreferences} />
+            </ActionPanel>
+          }
+        />
+      ) : null}
+
       {results.length === 0 && searchText.trim() !== "" && !isLoading ? (
         <Grid.EmptyView
           icon={Icon.MagnifyingGlass}
