@@ -1,4 +1,4 @@
-"""Trayce/Recall CLI commands."""
+"""Recall CLI commands."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ try:
 except Exception:
     _RICH_AVAILABLE = False
 
-# Trayce accent colour — matches setup_wizard
+# Recall accent colour
 _ACCENT = "#d97757"
 _DIM = "#737373"
 
@@ -118,7 +118,7 @@ def _cmd_status(_: argparse.Namespace) -> int:
         connector_status = _fetch_json("/connector-status")
     except Exception as exc:
         print(f"Daemon status check failed: {exc}")
-        print("Run: trayce start")
+        print("Run: recall start")
         return 1
 
     # /stats reports count. /health no longer includes it (liveness-only).
@@ -537,7 +537,7 @@ def _cmd_open_memory(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="trayce", description="Trayce local semantic memory CLI")
+    parser = argparse.ArgumentParser(prog="recall", description="Recall — local semantic search CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_start = sub.add_parser("start", help="Start daemon")

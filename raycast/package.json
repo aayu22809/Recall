@@ -13,10 +13,10 @@
     {
       "name": "pythonPackagePath",
       "title": "Python Package Path",
-      "description": "Absolute path to the vector-embedded-finder Python package (the directory containing vector_embedded_finder/)",
+      "description": "Absolute path to the Recall Python package (the directory containing vector_embedded_finder/)",
       "type": "textfield",
       "required": true,
-      "placeholder": "/path/to/vector-embedded-finder"
+      "placeholder": "/path/to/recall"
     },
     {
       "name": "pythonPath",

@@ -176,8 +176,8 @@ def _detect_embedding_provider() -> str:
 def screen_splash() -> None:
     CONSOLE.clear()
     CONSOLE.print()
-    CONSOLE.print(f"  [{C['dim']}]╭─ vector-embedded-finder setup ─╮[/]")
-    CONSOLE.print(f"  [{C['dim']}]│ local multimodal memory        │[/]")
+    CONSOLE.print(f"  [{C['dim']}]╭─────── Recall setup ────────────╮[/]")
+    CONSOLE.print(f"  [{C['dim']}]│ local search for everything     │[/]")
     CONSOLE.print(f"  [{C['dim']}]╰────────────────────────────────╯[/]")
     CONSOLE.print()
     time.sleep(0.5)
@@ -937,7 +937,7 @@ def screen_done(detected: dict, stats: dict[str, int]) -> None:
         CONSOLE.print(f"  [{C['dim']}]Tip: copy paths above manually into Raycast preferences.[/]")
 
     CONSOLE.print()
-    CONSOLE.print(f"  [{C['dim']}]You're all set. Open Raycast and search for Memory Search to try it. 🔍[/]")
+    CONSOLE.print(f"  [{C['dim']}]You're all set. Open Raycast and search for 'Recall' to try it.[/]")
     CONSOLE.print()
 
 

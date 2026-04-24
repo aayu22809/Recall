@@ -109,7 +109,7 @@ export default function SyncStatus() {
                   icon={Icon.Link}
                   onAction={async () => {
                     try {
-                      await openTerminalCommand(`trayce connect ${source}`);
+                      await openTerminalCommand(`recall connect ${source}`);
                     } catch (error) {
                       await showToast({
                         style: Toast.Style.Failure,
