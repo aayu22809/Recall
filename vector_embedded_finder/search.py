@@ -6,14 +6,16 @@ import os
 import re
 import logging
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 
-from . import embedder, store
+from . import config, embedder, store
 from .reranker import reciprocal_rank_fusion
 
 logger = logging.getLogger(__name__)
 
 MIN_SIMILARITY = float(os.environ.get("VEF_MIN_SIMILARITY", "0.45"))
 RRF_K = int(os.environ.get("VEF_RRF_K", "60"))
+EMBED_CACHE_SIZE = int(os.environ.get("VEF_SEARCH_EMBED_CACHE_SIZE", "256"))
 
 _MEDIA_KEYWORDS = {
     "image": {"image", "photo", "picture", "screenshot"},
@@ -101,6 +103,27 @@ def _build_results(raw: dict) -> list[dict]:
     return results
 
 
+@lru_cache(maxsize=EMBED_CACHE_SIZE)
+def _embed_query_cached(
+    query: str,
+    provider: str,
+    model: str,
+    dimensions: int,
+) -> tuple[float, ...]:
+    return tuple(float(v) for v in embedder.embed_query(query))
+
+
+def _query_embedding(query: str) -> list[float]:
+    return list(
+        _embed_query_cached(
+            query,
+            config.EMBEDDING_PROVIDER,
+            config.EMBEDDING_MODEL,
+            config.EMBEDDING_DIMENSIONS,
+        )
+    )
+
+
 def search(
     query: str,
     n_results: int = 20,
@@ -108,7 +131,7 @@ def search(
     sources: list[str] | None = None,
 ) -> list[dict]:
     try:
-        query_embedding = embedder.embed_query(query)
+        query_embedding = _query_embedding(query)
     except Exception as exc:
         logger.warning("Search embedding failed for query %r: %s", query, exc)
         return []

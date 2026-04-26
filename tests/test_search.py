@@ -106,3 +106,23 @@ def test_no_results_empty_db(monkeypatch: Any, fake_embedding: list[float]) -> N
         lambda *_a, **_k: {"ids": [[]], "metadatas": [[]], "documents": [[]], "distances": [[]]},
     )
     assert search_mod.search("nothing here") == []
+
+
+def test_query_embedding_cache_skips_second_embed(monkeypatch: Any, fake_embedding: list[float]) -> None:
+    calls: list[str] = []
+    search_mod._embed_query_cached.cache_clear()
+
+    def fake_embed(query: str) -> list[float]:
+        calls.append(query)
+        return fake_embedding
+
+    monkeypatch.setattr(search_mod.embedder, "embed_query", fake_embed)
+    monkeypatch.setattr(
+        search_mod.store,
+        "search",
+        lambda *_a, **_k: {"ids": [[]], "metadatas": [[]], "documents": [[]], "distances": [[]]},
+    )
+
+    assert search_mod.search("repeat query") == []
+    assert search_mod.search("repeat query") == []
+    assert calls == ["repeat query"]
