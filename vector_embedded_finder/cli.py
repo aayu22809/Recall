@@ -42,7 +42,7 @@ def _console() -> Console | None:
 
 
 def _daemon_base_url() -> str:
-    return f"http://{config.DAEMON_HOST}:{config.DAEMON_PORT}"
+    return config.RECALL_SOCKET_BASE_URL
 
 
 def _render_results(results: list[dict[str, Any]]) -> None:
@@ -62,11 +62,12 @@ def _run_daemon_command(args: list[str]) -> int:
 
 def _fetch_json(path: str, method: str = "GET", payload: dict[str, Any] | None = None, timeout: float = 30.0) -> dict[str, Any]:
     url = f"{_daemon_base_url()}{path}"
-    with httpx.Client(timeout=timeout) as client:
+    transport = httpx.HTTPTransport(uds=str(config.SOCKET_PATH))
+    with httpx.Client(transport=transport, base_url=_daemon_base_url(), timeout=timeout) as client:
         if method == "GET":
-            resp = client.get(url)
+            resp = client.get(path)
         else:
-            resp = client.post(url, json=payload or {})
+            resp = client.post(path, json=payload or {})
     resp.raise_for_status()
     data = resp.json()
     if not isinstance(data, dict):

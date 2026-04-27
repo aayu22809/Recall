@@ -28,11 +28,18 @@ def test_text_file_ingested(monkeypatch: Any, tmp_path: Path, fake_embedding: li
     monkeypatch.setattr(ingest.store, "exists", lambda _doc_id: False)
     monkeypatch.setattr(ingest.embedder, "embed_text", lambda _text: fake_embedding)
 
-    def fake_add(doc_id: str, embedding: list[float], metadata: dict[str, Any], document: str = "") -> None:
+    def fake_add(
+        doc_id: str,
+        embedding: list[float],
+        metadata: dict[str, Any],
+        document: str = "",
+        enrichment: dict[str, Any] | None = None,
+    ) -> None:
         captured["doc_id"] = doc_id
         captured["embedding"] = embedding
         captured["metadata"] = metadata
         captured["document"] = document
+        captured["enrichment"] = enrichment or {}
 
     monkeypatch.setattr(ingest.store, "add", fake_add)
     result = ingest.ingest_file(p, source="manual")
@@ -40,3 +47,11 @@ def test_text_file_ingested(monkeypatch: Any, tmp_path: Path, fake_embedding: li
     assert result["status"] == "embedded"
     assert result["category"] == "text"
     assert captured["metadata"]["file_name"] == "note.txt"
+    assert captured["enrichment"] == {
+        "caption": "",
+        "ocr_text": "",
+        "gps_city": "",
+        "face_count": 0,
+        "exif_date": "",
+        "exif_camera": "",
+    }

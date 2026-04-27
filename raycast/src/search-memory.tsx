@@ -104,7 +104,7 @@ export default function SearchMemory() {
             showToast({
               style: Toast.Style.Failure,
               title: "Auth Error",
-              message: "GEMINI_API_KEY missing or invalid — check extension preferences",
+              message: "Optional cloud enrichment key is invalid — local search still works once configuration is fixed",
             });
           } else if (e.code === "RATE_LIMIT") {
             showToast({ style: Toast.Style.Failure, title: "Rate Limited", message: e.message });

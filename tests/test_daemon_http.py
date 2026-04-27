@@ -10,22 +10,21 @@ from vector_embedded_finder import daemon
 
 
 def _client(monkeypatch: Any, tmp_path: Path) -> TestClient:
-    from vector_embedded_finder import config, embedder, store
+    from vector_embedded_finder import config, embedder, migration, model_manager, store
     search_mod = importlib.import_module("vector_embedded_finder.search")
 
     monkeypatch.setattr(config, "EMBEDDING_PROVIDER", "ollama", raising=False)
     monkeypatch.setattr(config, "WATCHED_DIRS_FILE", tmp_path / "watched_dirs.json", raising=False)
     monkeypatch.setattr(config, "ensure_vef_dirs", lambda: None, raising=False)
+    monkeypatch.setattr(config, "ensure_runtime_dirs", lambda: None, raising=False)
     monkeypatch.setattr(embedder, "warmup_provider", lambda: None)
+    monkeypatch.setattr(model_manager, "warmup", lambda: None)
+    monkeypatch.setattr(migration, "ensure_migrated", lambda: {"status": "complete"})
+    monkeypatch.setattr(migration, "status", lambda: {"status": "complete"})
+    monkeypatch.setattr(store, "initialize", lambda: None)
+    monkeypatch.setattr(store, "index_status", lambda: {"backend": "memory", "count": 0, "ready": True, "dirty": False})
+    monkeypatch.setattr(store, "get_sources", lambda: [])
 
-    class _Coll:
-        def count(self) -> int:
-            return 0
-
-        def get(self, limit: int = 0, include: list[str] | None = None) -> dict[str, list[dict]]:
-            return {"metadatas": []}
-
-    monkeypatch.setattr(store, "_get_collection", lambda: _Coll())
     monkeypatch.setattr(store, "count", lambda: 0)
     monkeypatch.setattr(search_mod, "search", lambda *_a, **_k: [])
     monkeypatch.setattr(daemon, "_run_connector_sync_once", lambda **_k: {})
