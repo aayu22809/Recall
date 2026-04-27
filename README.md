@@ -1,5 +1,5 @@
 <h1 align="center">Recall</h1>
-<p align="center"><em>Your local second brain — one search box for every file, email, calendar event, and assignment. Nothing leaves your machine.</em></p>
+<p align="center"><em>One search box for your files, email, calendar, and notes — running entirely on your Mac.</em></p>
 
 <p align="center">
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS-111?style=flat-square">
@@ -9,14 +9,22 @@
   <img alt="mcp" src="https://img.shields.io/badge/MCP-compatible-8A2BE2?style=flat-square">
 </p>
 
-![System architecture](docs/figures/fig4_architecture.png)
+Recall is a background daemon that indexes your **files, Gmail, Google Calendar, Google Drive, Canvas/Schoology, Notion, and cal.ai** into a local vector database on your Mac. Search everything from Raycast, the `recall` CLI, or any MCP client. No data leaves your machine.
 
-Recall is a persistent background daemon that indexes **your files, Gmail, Google Calendar, Google Drive, cal.ai, Canvas / Schoology, and Notion** into a single local vector database. A Raycast extension, a `recall` CLI, and an MCP server all query the same in-process index over loopback HTTP.
+```
+recall search "meeting notes from last week"
+recall search "golden gate bridge photo"
+recall search "python async generator example"
+```
 
-- **Local-first.** Embeddings, vectors, and OAuth tokens live on disk. The only outbound traffic is your chosen embedding provider (or zero, if you run [Ollama](https://ollama.ai) locally).
-- **One search box, everything.** Gmail thread, PDF in `~/Downloads`, assignment posted in Canvas, meeting on your calendar — same query, same ranking.
+- **Private.** Embeddings and tokens live on disk. The only outbound call is to your embedding provider — or zero, if you run [Ollama](https://ollama.ai) locally.
 - **Fast.** Sub-200 ms semantic search over 1,000+ documents on an M-series Mac.
-- **Boring.** The daemon starts in under 4 s, ignores duplicate files via SHA-256, and gets out of the way when you're actively using the machine.
+- **Unobtrusive.** Backs off when you're actively using the machine; ignores duplicates via SHA-256 hashing.
+- **Not screen recording.** Recall indexes discrete artifacts (files, emails, events) — not your screen or microphone.
+
+### Why local-first?
+
+Cloud search tools (Notion AI, Mem, etc.) send your content to third-party AI providers for indexing and query processing. Recall does not. Your index is a folder on your disk — delete it with `rm -rf ~/.vef/chroma` to start over. No account deletion forms, no retention windows, no training on your data.
 
 <p align="center">
   <img src="docs/figures/fig3_latency.png" width="70%" alt="Search latency benchmark">

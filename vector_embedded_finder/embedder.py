@@ -12,16 +12,21 @@ import logging
 import random
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import httpx
-from google import genai
-from google.genai import types
 
 from . import config
 
 logger = logging.getLogger(__name__)
 
-_client: genai.Client | None = None
+if TYPE_CHECKING:
+    from google import genai
+    from google.genai import types
+
+_client: Any | None = None
+_genai_mod: Any | None = None
+_genai_types_mod: Any | None = None
 
 _MAX_RETRIES = 5
 _BASE_BACKOFF = 2.0  # seconds
@@ -30,8 +35,20 @@ _BASE_BACKOFF = 2.0  # seconds
 def _get_client() -> genai.Client:
     global _client
     if _client is None:
+        genai, _types = _google_modules()
         _client = genai.Client(api_key=config.get_api_key())
     return _client
+
+
+def _google_modules() -> tuple[Any, Any]:
+    global _genai_mod, _genai_types_mod
+    if _genai_mod is None or _genai_types_mod is None:
+        from google import genai
+        from google.genai import types
+
+        _genai_mod = genai
+        _genai_types_mod = types
+    return _genai_mod, _genai_types_mod
 
 
 def _is_rate_limit(exc: Exception) -> bool:
@@ -63,6 +80,7 @@ def _call_with_retry(fn, provider: str):
 
 def _embed_text_gemini(text: str, task: str) -> list[float]:
     client = _get_client()
+    _genai, types = _google_modules()
 
     def _call():
         result = client.models.embed_content(
@@ -152,6 +170,7 @@ def embed_image(path: Path) -> list[float]:
     if config.EMBEDDING_PROVIDER != "gemini":
         return embed_text(f"Image file: {path.name}")
     client = _get_client()
+    _genai, types = _google_modules()
     with open(path, "rb") as f:
         image_bytes = f.read()
 
@@ -178,6 +197,7 @@ def embed_audio(path: Path) -> list[float]:
     if config.EMBEDDING_PROVIDER != "gemini":
         return embed_text(f"Audio file: {path.name}")
     client = _get_client()
+    _genai, types = _google_modules()
     with open(path, "rb") as f:
         audio_bytes = f.read()
 
@@ -204,6 +224,7 @@ def embed_video(path: Path) -> list[float]:
     if config.EMBEDDING_PROVIDER != "gemini":
         return embed_text(f"Video file: {path.name}")
     client = _get_client()
+    _genai, types = _google_modules()
     with open(path, "rb") as f:
         video_bytes = f.read()
 
@@ -230,6 +251,7 @@ def embed_pdf(path: Path) -> list[float]:
     if config.EMBEDDING_PROVIDER != "gemini":
         return embed_text(f"PDF file: {path.name}")
     client = _get_client()
+    _genai, types = _google_modules()
     with open(path, "rb") as f:
         pdf_bytes = f.read()
 

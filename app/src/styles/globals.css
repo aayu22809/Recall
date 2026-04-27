@@ -1,0 +1,104 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --bg: #111315;
+  --bg-panel: #171a1d;
+  --bg-hover: #202428;
+  --bg-input: #14171a;
+  --border: #2a2f33;
+  --border-strong: #363d42;
+  --fg: #edf0f2;
+  --fg-muted: #9ca5ad;
+  --fg-dim: #6d767f;
+  --accent: #6bc28b;
+  --accent-soft: rgba(107, 194, 139, 0.16);
+
+  --radius-chip: 4px;
+  --radius-panel: 6px;
+
+  --shadow-floating: 0 12px 28px rgba(0, 0, 0, 0.32);
+
+  --font-sans: "SF Pro Text", "SF Pro Display", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background:
+    radial-gradient(circle at top, rgba(107, 194, 139, 0.08), transparent 28%),
+    linear-gradient(180deg, #14181b 0%, var(--bg) 24%);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button {
+  font: inherit;
+}
+
+/* macOS-native focus ring — replaced by an internal accent ring on
+   interactive elements. */
+:focus {
+  outline: none;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #23262d;
+  border-radius: 6px;
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2c2f37;
+}
+
+/* Title bar drag region — for the macOS overlay title bar style. */
+.title-drag {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.title-no-drag,
+button,
+input,
+[role="button"] {
+  -webkit-app-region: no-drag;
+}
+
+/* Reusable focus ring. */
+.ring-recall {
+  box-shadow: 0 0 0 1px var(--border), 0 0 0 3px var(--accent-soft);
+}
+
+/* Shimmer for loading rows. */
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.02) 0%,
+    rgba(255, 255, 255, 0.06) 50%,
+    rgba(255, 255, 255, 0.02) 100%
+  );
+  background-size: 200% 100%;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}

@@ -1,0 +1,99 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Recall",
+  "version": "0.4.0",
+  "identifier": "ai.recall.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Recall",
+        "width": 1200,
+        "height": 780,
+        "minWidth": 880,
+        "minHeight": 560,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "transparent": false,
+        "backgroundColor": "#0e0f12",
+        "visible": false,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true
+      },
+      {
+        "label": "spotlight",
+        "title": "Recall Spotlight",
+        "width": 640,
+        "height": 72,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "resizable": false,
+        "center": true,
+        "url": "/#spotlight",
+        "windowEffects": {
+          "effects": ["hudWindow"],
+          "state": "active"
+        }
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: https: data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* ipc: https://accounts.google.com https://oauth2.googleapis.com https://api.notion.com https://www.googleapis.com"
+    },
+    "trayIcon": {
+      "id": "recall-tray",
+      "iconPath": "icons/tray.png",
+      "iconAsTemplate": true,
+      "menuOnLeftClick": true,
+      "tooltip": "Recall"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["recall"]
+      }
+    },
+    "updater": {
+      "endpoints": [
+        "https://github.com/aayu22809/Recall/releases/latest/download/latest.json"
+      ],
+      "dialog": false,
+      "pubkey": ""
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "category": "Productivity",
+    "shortDescription": "Local-first semantic memory",
+    "longDescription": "Search your files, email, calendar, and notes — running entirely on your Mac.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns"
+    ],
+    "externalBin": ["binaries/recall-daemon"],
+    "macOS": {
+      "frameworks": [],
+      "minimumSystemVersion": "12.0",
+      "exceptionDomain": "",
+      "signingIdentity": null,
+      "providerShortName": null,
+      "entitlements": "entitlements.plist"
+    }
+  }
+}

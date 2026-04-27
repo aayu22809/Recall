@@ -81,14 +81,26 @@ class GmailConnector(BaseConnector):
         return self._service
 
     def authenticate(self) -> None:
-        """Open browser OAuth flow and save tokens."""
+        """Open browser OAuth flow and save tokens.
+
+        Short-circuits to success if the Tauri shell has already written a
+        valid token JSON via PUT /credentials/gmail — in that path the Rust
+        OAuth flow owns client_id/client_secret and the legacy
+        gmail_oauth_client.json file is irrelevant.
+        """
+        if self.is_authenticated():
+            logger.info("Gmail already authenticated (token present)")
+            return
+
         from google_auth_oauthlib.flow import InstalledAppFlow
 
         client_file = _oauth_client_path()
         if not client_file.exists():
             raise FileNotFoundError(
                 f"OAuth client credentials not found at {client_file}.\n"
-                "Download your OAuth 2.0 client JSON from Google Cloud Console and save it there."
+                "Either authenticate from the Recall app (Sources panel) or "
+                "download your OAuth 2.0 client JSON from Google Cloud Console "
+                "and save it there."
             )
 
         flow = InstalledAppFlow.from_client_secrets_file(str(client_file), SCOPES)

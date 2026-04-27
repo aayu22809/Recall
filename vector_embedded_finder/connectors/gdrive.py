@@ -88,13 +88,25 @@ class GDriveConnector(BaseConnector):
         return self._service
 
     def authenticate(self) -> None:
+        """Open browser OAuth flow.
+
+        Short-circuits to success when the Tauri shell has already written a
+        token JSON via PUT /credentials/gmail (the token is shared across
+        Gmail/GCal/GDrive).
+        """
+        if self.is_authenticated():
+            logger.info("Google Drive already authenticated (token present)")
+            return
+
         from google_auth_oauthlib.flow import InstalledAppFlow
 
         client_file = _oauth_client_path()
         if not client_file.exists():
             raise FileNotFoundError(
                 f"OAuth client credentials not found at {client_file}.\n"
-                "Download your OAuth 2.0 client JSON from Google Cloud Console and save it there."
+                "Either authenticate from the Recall app (Sources panel) or "
+                "download your OAuth 2.0 client JSON from Google Cloud Console "
+                "and save it there."
             )
 
         flow = InstalledAppFlow.from_client_secrets_file(str(client_file), SCOPES)

@@ -43,6 +43,19 @@ _last_sync_result: dict[str, dict] = {}  # result of the most recent sync run
 _last_connector_sync: dict[str, float] = {}
 _ingest_lock = threading.Lock()
 _ingest_in_flight = 0
+_index_lock = threading.Lock()
+_index_state: dict[str, object] = {
+    "running": False,
+    "queued": 0,
+    "processed": 0,
+    "embedded": 0,
+    "skipped": 0,
+    "errors": 0,
+    "active_path": None,
+    "started_at": None,
+    "finished_at": None,
+    "last_error": None,
+}
 
 from . import config as _config
 SYNC_STATE_FILE = _config.VEF_DIR / "sync_state.json"
@@ -78,6 +91,32 @@ def _track_ingest(delta: int) -> None:
     global _ingest_in_flight
     with _ingest_lock:
         _ingest_in_flight = max(0, _ingest_in_flight + delta)
+
+
+def _snapshot_index_state() -> dict[str, object]:
+    with _index_lock:
+        return dict(_index_state)
+
+
+def _set_index_state(**updates: object) -> dict[str, object]:
+    with _index_lock:
+        _index_state.update(updates)
+        return dict(_index_state)
+
+
+def _reset_index_state(total: int) -> dict[str, object]:
+    return _set_index_state(
+        running=True,
+        queued=max(0, total),
+        processed=0,
+        embedded=0,
+        skipped=0,
+        errors=0,
+        active_path=None,
+        started_at=datetime.now(timezone.utc).isoformat(),
+        finished_at=None,
+        last_error=None,
+    )
 
 
 # ── Connector sync background thread ─────────────────────────────────────────
@@ -195,6 +234,108 @@ def _connector_sync_loop() -> None:
         _run_connector_sync_once(force=False)
 
 
+def _load_watched_dirs() -> list[str]:
+    try:
+        if not _config.WATCHED_DIRS_FILE.exists():
+            return []
+        data = json.loads(_config.WATCHED_DIRS_FILE.read_text())
+        if not isinstance(data, list):
+            return []
+        return [str(Path(item).expanduser().resolve()) for item in data if item]
+    except Exception:
+        return []
+
+
+def _save_watched_dirs(dirs: list[str]) -> None:
+    _config.ensure_vef_dirs()
+    _config.WATCHED_DIRS_FILE.write_text(json.dumps(dirs, indent=2))
+
+
+def _install_watcher(app, directories: list[str]) -> None:
+    watcher = getattr(app.state, "watcher", None)
+    if watcher is not None:
+        try:
+            watcher.stop()
+        except Exception as exc:
+            logger.debug("Could not stop existing watcher: %s", exc)
+
+    cleaned = [Path(path).expanduser().resolve() for path in directories if path]
+    if not cleaned:
+        app.state.watcher = None
+        return
+
+    from .watcher import FileWatcher
+    from .ingest import ingest_file
+
+    def _on_new_file(path: Path) -> None:
+        try:
+            if path.exists():
+                _track_ingest(1)
+                result = ingest_file(path, source="files")
+                if result.get("status") == "embedded":
+                    _known_sources.add("files")
+                logger.info("Auto-indexed: %s", path)
+        except Exception as exc:
+            logger.debug("Auto-index failed for %s: %s", path, exc)
+        finally:
+            _track_ingest(-1)
+
+    watcher = FileWatcher()
+    watcher.start(cleaned, _on_new_file)
+    app.state.watcher = watcher
+    logger.info("File watcher started on %d directories", len(cleaned))
+
+
+def _index_watched_dirs_worker(directories: list[str]) -> None:
+    from .ingest import ingest_directory
+
+    supported_files: list[Path] = []
+    for directory in directories:
+        root = Path(directory).expanduser().resolve()
+        if not root.exists() or not root.is_dir():
+            continue
+        supported_files.extend(
+            [path for path in sorted(root.glob("**/*")) if path.is_file() and _config.get_media_category(path.suffix.lower())]
+        )
+
+    total = len(supported_files)
+    _reset_index_state(total)
+
+    def _progress(processed: int, _total: int, result: dict) -> None:
+        status = result.get("status")
+        updates = {
+            "processed": processed,
+            "queued": max(0, total - processed),
+            "active_path": result.get("path") or result.get("file_path"),
+        }
+        if status == "embedded":
+            updates["embedded"] = int(_snapshot_index_state()["embedded"]) + 1
+            _known_sources.add("files")
+        elif status == "skipped":
+            updates["skipped"] = int(_snapshot_index_state()["skipped"]) + 1
+        elif status == "error":
+            updates["errors"] = int(_snapshot_index_state()["errors"]) + 1
+            updates["last_error"] = str(result.get("error", "indexing error"))
+        _set_index_state(**updates)
+
+    try:
+        for directory in directories:
+            root = Path(directory).expanduser().resolve()
+            if not root.exists() or not root.is_dir():
+                continue
+            ingest_directory(root, source="files", progress_callback=_progress)
+    except Exception as exc:
+        _set_index_state(last_error=str(exc))
+        logger.exception("Watched-folder indexing failed")
+    finally:
+        _set_index_state(
+            running=False,
+            active_path=None,
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            queued=0,
+        )
+
+
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 
@@ -233,31 +374,11 @@ def _build_app():
             logger.warning("Could not pre-populate sources cache: %s", exc)
 
         # Start filesystem watcher if directories are configured.
-        watcher = None
+        app.state.watcher = None
         try:
-            if config.WATCHED_DIRS_FILE.exists():
-                dirs_data = json.loads(config.WATCHED_DIRS_FILE.read_text())
-                dirs = [Path(d) for d in dirs_data if d]
-                if dirs:
-                    from .watcher import FileWatcher
-                    from .ingest import ingest_file
-
-                    def _on_new_file(p: Path) -> None:
-                        try:
-                            if p.exists():
-                                _track_ingest(1)
-                                result = ingest_file(p, source="files")
-                                if result.get("status") == "embedded":
-                                    _known_sources.add("files")
-                                logger.info("Auto-indexed: %s", p)
-                        except Exception as exc:
-                            logger.debug("Auto-index failed for %s: %s", p, exc)
-                        finally:
-                            _track_ingest(-1)
-
-                    watcher = FileWatcher()
-                    watcher.start(dirs, _on_new_file)
-                    logger.info("File watcher started on %d directories", len(dirs))
+            dirs = _load_watched_dirs()
+            if dirs:
+                _install_watcher(app, dirs)
         except Exception as exc:
             logger.warning("Could not start file watcher: %s", exc)
 
@@ -274,6 +395,7 @@ def _build_app():
         yield  # ── server is now running ──────────────────────────────────────
 
         # ── Shutdown ──────────────────────────────────────────────────────────
+        watcher = getattr(app.state, "watcher", None)
         if watcher:
             watcher.stop()
 
@@ -337,7 +459,12 @@ def _build_app():
         # Liveness check must be constant-time. Do NOT touch the DB here —
         # chromadb's count() serialises and can take hundreds of ms under load,
         # which would make the daemon look dead whenever Raycast polls.
-        return {"status": "ok"}
+        return {
+            "status": "ok",
+            "service": "recall-daemon",
+            "version": app.version,
+            "port": _config.DAEMON_PORT,
+        }
 
     @app.get("/stats")
     async def stats():
@@ -355,7 +482,20 @@ def _build_app():
         from . import store
         with _ingest_lock:
             in_flight = _ingest_in_flight
-        return {"indexing": in_flight > 0, "queued": in_flight, "total_indexed": store.count()}
+        status = _snapshot_index_state()
+        return {
+            "indexing": bool(status.get("running")) or in_flight > 0,
+            "queued": int(status.get("queued", 0)) + in_flight,
+            "processed": int(status.get("processed", 0)),
+            "embedded": int(status.get("embedded", 0)),
+            "skipped": int(status.get("skipped", 0)),
+            "errors": int(status.get("errors", 0)),
+            "total_indexed": store.count(),
+        }
+
+    @app.get("/index/status")
+    async def index_status():
+        return _snapshot_index_state()
 
     @app.post("/ingest")
     async def ingest(req: dict = Body(...)):
@@ -439,47 +579,146 @@ def _build_app():
 
     @app.get("/watched-dirs")
     async def get_watched_dirs():
-        from . import config
-        dirs: list[str] = []
-        if config.WATCHED_DIRS_FILE.exists():
-            try:
-                dirs = json.loads(config.WATCHED_DIRS_FILE.read_text())
-            except Exception:
-                pass
-        return {"dirs": dirs}
+        return {"dirs": _load_watched_dirs(), "restart_required": False}
 
     @app.post("/watched-dirs")
     async def add_watched_dir(req: dict = Body(default={})):
-        from . import config
         path = str(req.get("path", "")).strip()
         if not path:
             raise HTTPException(status_code=400, detail="path required")
-        from pathlib import Path as _Path
-        resolved = str(_Path(path).expanduser().resolve())
-        dirs: list[str] = []
-        if config.WATCHED_DIRS_FILE.exists():
-            try:
-                dirs = json.loads(config.WATCHED_DIRS_FILE.read_text())
-            except Exception:
-                pass
+        resolved = str(Path(path).expanduser().resolve())
+        if not Path(resolved).exists():
+            raise HTTPException(status_code=400, detail=f"Path does not exist: {resolved}")
+        if not Path(resolved).is_dir():
+            raise HTTPException(status_code=400, detail=f"Path is not a directory: {resolved}")
+        dirs = _load_watched_dirs()
         if resolved not in dirs:
             dirs.append(resolved)
-            config.WATCHED_DIRS_FILE.write_text(json.dumps(dirs, indent=2))
-        return {"dirs": dirs}
+            _save_watched_dirs(dirs)
+            _install_watcher(app, dirs)
+            threading.Thread(
+                target=_index_watched_dirs_worker,
+                args=([resolved],),
+                daemon=True,
+                name="vef-watch-add-index",
+            ).start()
+        return {"dirs": dirs, "restart_required": False}
 
     @app.delete("/watched-dirs")
     async def remove_watched_dir(req: dict = Body(default={})):
-        from . import config
         path = str(req.get("path", "")).strip()
-        dirs: list[str] = []
-        if config.WATCHED_DIRS_FILE.exists():
-            try:
-                dirs = json.loads(config.WATCHED_DIRS_FILE.read_text())
-            except Exception:
-                pass
-        dirs = [d for d in dirs if d != path]
-        config.WATCHED_DIRS_FILE.write_text(json.dumps(dirs, indent=2))
-        return {"dirs": dirs}
+        dirs = [d for d in _load_watched_dirs() if d != path]
+        _save_watched_dirs(dirs)
+        _install_watcher(app, dirs)
+        return {"dirs": dirs, "restart_required": False}
+
+    @app.post("/index/watched-dirs")
+    async def index_watched_dirs():
+        dirs = _load_watched_dirs()
+        if not dirs:
+            _set_index_state(
+                running=False,
+                queued=0,
+                processed=0,
+                embedded=0,
+                skipped=0,
+                errors=0,
+                active_path=None,
+                started_at=datetime.now(timezone.utc).isoformat(),
+                finished_at=datetime.now(timezone.utc).isoformat(),
+                last_error=None,
+            )
+            return {"status": "idle", "reason": "no_watched_dirs", "index": _snapshot_index_state()}
+        if bool(_snapshot_index_state().get("running")):
+            return {"status": "in_progress", "index": _snapshot_index_state()}
+        threading.Thread(
+            target=_index_watched_dirs_worker,
+            args=(dirs,),
+            daemon=True,
+            name="vef-folder-index",
+        ).start()
+        return {"status": "started", "index": _snapshot_index_state()}
+
+    @app.get("/watched-dirs/stats")
+    async def watched_dirs_stats():
+        """Per-folder indexed document count.
+
+        Walks the chroma collection metadata once (sampled, capped at 5000
+        docs) and groups by the watched-folder root each `file_path` falls
+        under. Returns 0 for unmatched folders rather than 404 so the UI
+        can render a row before any documents have indexed.
+        """
+        from . import store
+        dirs = _load_watched_dirs()
+        roots = [Path(d).resolve() for d in dirs]
+        counts: dict[str, int] = {str(r): 0 for r in roots}
+        try:
+            coll = store._get_collection()
+            total = coll.count()
+            sample = coll.get(limit=min(total, 5000), include=["metadatas"])
+            for m in sample.get("metadatas") or []:
+                fp = (m or {}).get("file_path")
+                if not fp or not isinstance(fp, str):
+                    continue
+                if fp.startswith(("gmail://", "gcal://", "gdrive://", "calai://", "canvas://", "schoology://", "notion://")):
+                    continue
+                try:
+                    p = Path(fp).resolve()
+                except Exception:
+                    continue
+                for r in roots:
+                    try:
+                        p.relative_to(r)
+                        counts[str(r)] += 1
+                        break
+                    except ValueError:
+                        continue
+        except Exception as exc:
+            logger.debug("watched-dirs/stats failed: %s", exc)
+        return {"stats": [{"path": k, "count": v} for k, v in counts.items()]}
+
+    @app.put("/credentials/{source}")
+    async def put_credentials(source: str, req: dict = Body(...)):
+        """Write a connector credential JSON to ~/.vef/credentials/<source>.json.
+
+        Used by the Tauri shell to deliver OAuth tokens fetched in Rust to the
+        Python connector layer without the connector ever touching a Cloud
+        Console-downloaded client_secrets file. Body is the full token shape
+        google.oauth2.credentials.Credentials.from_authorized_user_info accepts
+        for Google sources, or the provider-specific JSON shape for others.
+        """
+        from . import config
+        allowed = {"gmail", "gcal", "gdrive", "calai", "canvas", "schoology", "notion"}
+        normalized = source.strip().lower()
+        if normalized not in allowed:
+            raise HTTPException(status_code=400, detail=f"Unknown source '{source}'")
+        if not isinstance(req, dict) or not req:
+            raise HTTPException(status_code=400, detail="Request body must be a non-empty JSON object")
+        config.ensure_vef_dirs()
+        target_name = "gmail.json" if normalized in {"gmail", "gcal", "gdrive"} else f"{normalized}.json"
+        target = config.CREDENTIALS_DIR / target_name
+        target.write_text(json.dumps(req, indent=2))
+        try:
+            os.chmod(target, 0o600)
+        except OSError:
+            pass
+        return {"ok": True, "path": str(target)}
+
+    @app.delete("/credentials/{source}")
+    async def delete_credentials(source: str):
+        """Disconnect a connector by removing its credential file."""
+        from . import config
+        allowed = {"gmail", "gcal", "gdrive", "calai", "canvas", "schoology", "notion"}
+        normalized = source.strip().lower()
+        if normalized not in allowed:
+            raise HTTPException(status_code=400, detail=f"Unknown source '{source}'")
+        target_name = "gmail.json" if normalized in {"gmail", "gcal", "gdrive"} else f"{normalized}.json"
+        target = config.CREDENTIALS_DIR / target_name
+        try:
+            target.unlink(missing_ok=True)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {"ok": True}
 
     @app.post("/configure")
     async def configure(req: dict = Body(default={})):
@@ -499,6 +738,30 @@ def _build_app():
         if req.get("gemini_api_key"):
             _set("GEMINI_API_KEY", str(req["gemini_api_key"]))
             os.environ["GEMINI_API_KEY"] = str(req["gemini_api_key"])
+        if req.get("nim_api_key"):
+            _set("NIM_API_KEY", str(req["nim_api_key"]))
+            os.environ["NIM_API_KEY"] = str(req["nim_api_key"])
+        if req.get("vef_embedding_provider"):
+            _set("VEF_EMBEDDING_PROVIDER", str(req["vef_embedding_provider"]).strip().lower())
+            os.environ["VEF_EMBEDDING_PROVIDER"] = str(req["vef_embedding_provider"]).strip().lower()
+        if req.get("vef_embedding_model"):
+            _set("VEF_EMBEDDING_MODEL", str(req["vef_embedding_model"]))
+            os.environ["VEF_EMBEDDING_MODEL"] = str(req["vef_embedding_model"])
+        if req.get("vef_embedding_dimensions"):
+            _set("VEF_EMBEDDING_DIMENSIONS", str(req["vef_embedding_dimensions"]))
+            os.environ["VEF_EMBEDDING_DIMENSIONS"] = str(req["vef_embedding_dimensions"])
+        if req.get("vef_ollama_base_url"):
+            _set("VEF_OLLAMA_BASE_URL", str(req["vef_ollama_base_url"]).rstrip("/"))
+            os.environ["VEF_OLLAMA_BASE_URL"] = str(req["vef_ollama_base_url"]).rstrip("/")
+        if req.get("vef_ollama_embed_model"):
+            _set("VEF_OLLAMA_EMBED_MODEL", str(req["vef_ollama_embed_model"]))
+            os.environ["VEF_OLLAMA_EMBED_MODEL"] = str(req["vef_ollama_embed_model"])
+        if req.get("vef_nim_embed_url"):
+            _set("VEF_NIM_EMBED_URL", str(req["vef_nim_embed_url"]))
+            os.environ["VEF_NIM_EMBED_URL"] = str(req["vef_nim_embed_url"])
+        if req.get("vef_nim_embed_model"):
+            _set("VEF_NIM_EMBED_MODEL", str(req["vef_nim_embed_model"]))
+            os.environ["VEF_NIM_EMBED_MODEL"] = str(req["vef_nim_embed_model"])
         if req.get("canvas_api_key"):
             _set("CANVAS_API_KEY", str(req["canvas_api_key"]))
             os.environ["CANVAS_API_KEY"] = str(req["canvas_api_key"])
@@ -511,6 +774,9 @@ def _build_app():
         if req.get("schoology_consumer_secret"):
             _set("SCHOOLOGY_CONSUMER_SECRET", str(req["schoology_consumer_secret"]))
             os.environ["SCHOOLOGY_CONSUMER_SECRET"] = str(req["schoology_consumer_secret"])
+        if req.get("schoology_base_url"):
+            _set("SCHOOLOGY_BASE_URL", str(req["schoology_base_url"]))
+            os.environ["SCHOOLOGY_BASE_URL"] = str(req["schoology_base_url"])
         env_file.write_text("\n".join(lines) + "\n")
         return {"ok": True}
 
@@ -551,6 +817,7 @@ def _configure_logging() -> None:
 
 
 def _run_server() -> None:
+    import asyncio
     import uvicorn
     from . import config
 
@@ -590,13 +857,17 @@ def _run_server() -> None:
 
     try:
         try:
-            uvicorn.run(
-                app,
-                host=config.DAEMON_HOST,
-                port=config.DAEMON_PORT,
-                log_level="warning",
-                access_log=False,
+            server = uvicorn.Server(
+                uvicorn.Config(
+                    app,
+                    host=config.DAEMON_HOST,
+                    port=config.DAEMON_PORT,
+                    loop="asyncio",
+                    log_level="warning",
+                    access_log=False,
+                )
             )
+            asyncio.run(server.serve())
         except OSError as exc:
             if exc.errno == errno.EADDRINUSE:
                 if _poll_health(config.DAEMON_HOST, config.DAEMON_PORT, timeout_s=2.0):
