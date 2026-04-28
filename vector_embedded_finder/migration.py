@@ -75,24 +75,36 @@ def _import_chroma() -> dict[str, Any]:
     if total <= 0:
         return {"imported": 0, "skipped": 0}
 
-    rows = coll.get(include=["embeddings", "metadatas", "documents"])
     imported = 0
     skipped = 0
-    for idx, doc_id in enumerate(rows.get("ids", [])):
-        if store.exists(doc_id):
-            skipped += 1
-            continue
+    batch_size = max(1, int(config.INDEX_REBUILD_BATCH))
+    for offset in range(0, total, batch_size):
+        rows = coll.get(
+            include=["embeddings", "metadatas", "documents"],
+            limit=batch_size,
+            offset=offset,
+        )
+        ids = rows.get("ids", [])
         embeddings = rows.get("embeddings") or []
         metadatas = rows.get("metadatas") or []
         documents = rows.get("documents") or []
-        embedding = embeddings[idx] if idx < len(embeddings) else None
-        metadata = metadatas[idx] if idx < len(metadatas) else {}
-        document = documents[idx] if idx < len(documents) else ""
-        if not embedding:
-            skipped += 1
-            continue
-        store.add(str(doc_id), [float(v) for v in embedding], dict(metadata or {}), document=str(document or ""))
-        imported += 1
+        for idx, doc_id in enumerate(ids):
+            if store.exists(doc_id):
+                skipped += 1
+                continue
+            embedding = embeddings[idx] if idx < len(embeddings) else None
+            metadata = metadatas[idx] if idx < len(metadatas) else {}
+            document = documents[idx] if idx < len(documents) else ""
+            if not embedding:
+                skipped += 1
+                continue
+            store.add(
+                str(doc_id),
+                [float(v) for v in embedding],
+                dict(metadata or {}),
+                document=str(document or ""),
+            )
+            imported += 1
     return {"imported": imported, "skipped": skipped}
 
 

@@ -7,7 +7,6 @@ RECALL_ENABLE_COMPAT_HTTP=1 for migration and diagnostics.
 
 from __future__ import annotations
 
-import errno
 import json
 import logging
 import os
@@ -33,6 +32,7 @@ _ingest_lock = threading.Lock()
 _ingest_in_flight = 0
 _watcher = None
 _watcher_queue_depth: Callable[[], int] | None = None
+_watcher_lock = threading.Lock()
 
 from . import config as _config
 
@@ -169,6 +169,60 @@ def _build_app():
     from fastapi import Body, FastAPI, HTTPException
     from pydantic import BaseModel, ValidationError
 
+    def _load_watched_dirs() -> list[str]:
+        if not _config.WATCHED_DIRS_FILE.exists():
+            return []
+        try:
+            payload = json.loads(_config.WATCHED_DIRS_FILE.read_text())
+            if isinstance(payload, list):
+                return [str(row) for row in payload if row]
+        except Exception:
+            pass
+        return []
+
+    def _persist_watched_dirs(dirs: list[str]) -> None:
+        _config.ensure_runtime_dirs()
+        _config.WATCHED_DIRS_FILE.write_text(json.dumps(dirs, indent=2))
+
+    def _on_new_file(path: Path) -> None:
+        from .ingest import ingest_file
+
+        try:
+            if path.exists():
+                _track_ingest(1)
+                ingest_file(path, source="files")
+        except Exception as exc:
+            logger.debug("Auto-index failed for %s: %s", path, exc)
+        finally:
+            _track_ingest(-1)
+
+    def _on_delete_file(path: Path) -> None:
+        from . import store
+
+        try:
+            store.delete_by_path(path)
+        except Exception as exc:
+            logger.debug("Delete handling failed for %s: %s", path, exc)
+
+    def _restart_watcher(dirs: list[str]) -> None:
+        from .watcher import FileWatcher
+
+        resolved_dirs = [Path(row).expanduser().resolve() for row in dirs]
+        existing_dirs = [row for row in resolved_dirs if row.exists()]
+        with _watcher_lock:
+            global _watcher_queue_depth, _watcher
+            if _watcher is not None:
+                _watcher.stop()
+                _watcher = None
+                _watcher_queue_depth = None
+            if not existing_dirs:
+                return
+            watcher = FileWatcher()
+            watcher.start(existing_dirs, _on_new_file, delete_callback=_on_delete_file)
+            _watcher = watcher
+            _watcher_queue_depth = watcher.queued
+            logger.info("File watcher started on %d directories", len(existing_dirs))
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         from . import embedder, migration, store
@@ -179,37 +233,8 @@ def _build_app():
         embedder.warmup_provider()
         _last_connector_sync.update(_load_sync_state())
 
-        watcher = None
         try:
-            if _config.WATCHED_DIRS_FILE.exists():
-                dirs_data = json.loads(_config.WATCHED_DIRS_FILE.read_text())
-                dirs = [Path(d) for d in dirs_data if d]
-                if dirs:
-                    from .ingest import ingest_file
-                    from .watcher import FileWatcher
-
-                    def _on_new_file(path: Path) -> None:
-                        try:
-                            if path.exists():
-                                _track_ingest(1)
-                                ingest_file(path, source="files")
-                        except Exception as exc:
-                            logger.debug("Auto-index failed for %s: %s", path, exc)
-                        finally:
-                            _track_ingest(-1)
-
-                    def _on_delete_file(path: Path) -> None:
-                        try:
-                            store.delete_by_path(path)
-                        except Exception as exc:
-                            logger.debug("Delete handling failed for %s: %s", path, exc)
-
-                    watcher = FileWatcher()
-                    watcher.start(dirs, _on_new_file, delete_callback=_on_delete_file)
-                    global _watcher_queue_depth, _watcher
-                    _watcher = watcher
-                    _watcher_queue_depth = watcher.queued
-                    logger.info("File watcher started on %d directories", len(dirs))
+            _restart_watcher(_load_watched_dirs())
         except Exception as exc:
             logger.warning("Could not start file watcher: %s", exc)
 
@@ -221,8 +246,12 @@ def _build_app():
         sync_thread.start()
         logger.info("Recall daemon ready at %s", _config.SOCKET_PATH)
         yield
-        if watcher:
-            watcher.stop()
+        with _watcher_lock:
+            global _watcher_queue_depth, _watcher
+            if _watcher is not None:
+                _watcher.stop()
+                _watcher = None
+            _watcher_queue_depth = None
 
     app = FastAPI(title="Recall Daemon", version="2.0.0", lifespan=lifespan)
 
@@ -378,13 +407,7 @@ def _build_app():
 
     @app.get("/watched-dirs")
     async def get_watched_dirs():
-        dirs: list[str] = []
-        if _config.WATCHED_DIRS_FILE.exists():
-            try:
-                dirs = json.loads(_config.WATCHED_DIRS_FILE.read_text())
-            except Exception:
-                pass
-        return {"dirs": dirs}
+        return {"dirs": _load_watched_dirs()}
 
     @app.post("/watched-dirs")
     async def add_watched_dir(req: dict = Body(default={})):
@@ -392,28 +415,26 @@ def _build_app():
         if not path:
             raise HTTPException(status_code=400, detail="path required")
         resolved = str(Path(path).expanduser().resolve())
-        dirs: list[str] = []
-        if _config.WATCHED_DIRS_FILE.exists():
-            try:
-                dirs = json.loads(_config.WATCHED_DIRS_FILE.read_text())
-            except Exception:
-                pass
+        dirs = _load_watched_dirs()
         if resolved not in dirs:
             dirs.append(resolved)
-            _config.WATCHED_DIRS_FILE.write_text(json.dumps(dirs, indent=2))
+            _persist_watched_dirs(dirs)
+            try:
+                _restart_watcher(dirs)
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"Watcher reload failed: {exc}") from exc
         return {"dirs": dirs}
 
     @app.delete("/watched-dirs")
     async def remove_watched_dir(req: dict = Body(default={})):
         path = str(req.get("path", "")).strip()
-        dirs: list[str] = []
-        if _config.WATCHED_DIRS_FILE.exists():
-            try:
-                dirs = json.loads(_config.WATCHED_DIRS_FILE.read_text())
-            except Exception:
-                pass
-        dirs = [row for row in dirs if row != path]
-        _config.WATCHED_DIRS_FILE.write_text(json.dumps(dirs, indent=2))
+        resolved = str(Path(path).expanduser().resolve()) if path else ""
+        dirs = [row for row in _load_watched_dirs() if row != path and row != resolved]
+        _persist_watched_dirs(dirs)
+        try:
+            _restart_watcher(dirs)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Watcher reload failed: {exc}") from exc
         return {"dirs": dirs}
 
     @app.post("/configure")
@@ -525,6 +546,61 @@ def _poll_health_http(host: str, port: int, timeout_s: float) -> bool:
     return False
 
 
+def _build_compat_proxy_app():
+    from fastapi import FastAPI, Request, Response
+
+    app = FastAPI(title="Recall Compat Proxy", version="1.0.0")
+
+    async def _forward(path: str, request: Request) -> Response:
+        upstream = f"/{path}" if path else "/"
+        body = await request.body()
+        headers = {
+            key: value
+            for key, value in request.headers.items()
+            if key.lower() not in {"host", "content-length", "connection"}
+        }
+        transport = httpx.AsyncHTTPTransport(uds=str(_config.SOCKET_PATH))
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url=_config.RECALL_SOCKET_BASE_URL,
+            timeout=60.0,
+        ) as client:
+            upstream_resp = await client.request(
+                request.method,
+                upstream,
+                params=request.query_params,
+                content=body,
+                headers=headers,
+            )
+        response_headers = {
+            key: value
+            for key, value in upstream_resp.headers.items()
+            if key.lower() not in {"content-length", "transfer-encoding", "connection"}
+        }
+        return Response(
+            content=upstream_resp.content,
+            status_code=upstream_resp.status_code,
+            headers=response_headers,
+            media_type=upstream_resp.headers.get("content-type"),
+        )
+
+    @app.api_route(
+        "/",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    )
+    async def proxy_root(request: Request) -> Response:
+        return await _forward("", request)
+
+    @app.api_route(
+        "/{path:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    )
+    async def proxy_path(path: str, request: Request) -> Response:
+        return await _forward(path, request)
+
+    return app
+
+
 def _run_server() -> None:
     import uvicorn
 
@@ -556,10 +632,11 @@ def _run_server() -> None:
     app = _build_app()
     compat_thread = None
     if _config.RECALL_ENABLE_COMPAT_HTTP:
+        compat_app = _build_compat_proxy_app()
         compat_thread = threading.Thread(
             target=uvicorn.run,
             kwargs={
-                "app": app,
+                "app": compat_app,
                 "host": _config.DAEMON_HOST,
                 "port": _config.DAEMON_PORT,
                 "log_level": "warning",
@@ -599,10 +676,27 @@ def _read_pid() -> int | None:
 def cmd_start() -> None:
     _config.ensure_runtime_dirs()
     pid = _read_pid()
-    if pid and _pid_running(pid) and _poll_health_socket(timeout_s=3.0):
-        print(f"Daemon already running (pid {pid})")
-        return
-    if pid and not _pid_running(pid):
+    if pid and _pid_running(pid):
+        if _poll_health_socket(timeout_s=3.0):
+            print(f"Daemon already running (pid {pid})")
+            return
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except PermissionError:
+            print(f"Daemon process {pid} is unhealthy and cannot be terminated (permission denied).")
+            sys.exit(1)
+        except ProcessLookupError:
+            pass
+        for _ in range(20):
+            _time.sleep(0.2)
+            if not _pid_running(pid):
+                break
+        if _pid_running(pid):
+            print(f"Daemon process {pid} is unhealthy and could not be stopped.")
+            print("Stop it manually and retry.")
+            sys.exit(1)
+        _config.PID_FILE.unlink(missing_ok=True)
+    elif pid:
         _config.PID_FILE.unlink(missing_ok=True)
 
     log_path = _config.LOG_DIR / "daemon.log"

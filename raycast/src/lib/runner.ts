@@ -66,7 +66,7 @@ export interface ProgressInfo {
   total_indexed: number;
 }
 
-const SOCKET_PATH = `${os.homedir()}/.recall/recall.sock`;
+const SOCKET_PATH = process.env.RECALL_SOCKET_PATH?.trim() || `${os.homedir()}/.recall/recall.sock`;
 
 function resolvePrefs(): Preferences {
   return getPreferenceValues<Preferences>();

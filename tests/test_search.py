@@ -131,3 +131,27 @@ def test_query_embedding_cache_skips_second_embed(monkeypatch: Any, fake_embeddi
     assert search_mod.search("repeat query") == []
     assert search_mod.search("repeat query") == []
     assert calls == ["repeat query"]
+
+
+def test_result_cache_invalidates_on_store_epoch(monkeypatch: Any, fake_embedding: list[float]) -> None:
+    search_mod._embed_query_cached.cache_clear()
+    search_mod._RESULT_CACHE.clear()
+
+    epoch = {"value": 1}
+    state = {"doc_id": "doc-v1"}
+    monkeypatch.setattr(search_mod.store, "cache_epoch", lambda: int(epoch["value"]))
+    monkeypatch.setattr(search_mod.embedder, "embed_query", lambda _q: fake_embedding)
+    monkeypatch.setattr(
+        search_mod.store,
+        "dense_search",
+        lambda *_a, **_k: [_candidate(doc_id=str(state["doc_id"]), score=0.9)],
+    )
+    monkeypatch.setattr(search_mod.store, "keyword_search", lambda *_a, **_k: [])
+
+    first = search_mod.search("epoch test")
+    state["doc_id"] = "doc-v2"
+    epoch["value"] = 2
+    second = search_mod.search("epoch test")
+
+    assert first[0]["id"] == "doc-v1"
+    assert second[0]["id"] == "doc-v2"

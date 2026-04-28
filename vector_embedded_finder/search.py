@@ -160,6 +160,7 @@ def _result_cache_key(
         tuple(sorted(sources or [])),
         config.EMBEDDING_PROVIDER,
         config.EMBEDDING_MODEL,
+        store.cache_epoch(),
     )
 
 

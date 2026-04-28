@@ -25,6 +25,16 @@ logger = logging.getLogger(__name__)
 _CONN: sqlite3.Connection | None = None
 _LOCK = threading.RLock()
 _HOT_INDEX = None
+_CACHE_EPOCH = 0
+
+
+def _bump_cache_epoch() -> None:
+    global _CACHE_EPOCH
+    _CACHE_EPOCH += 1
+
+
+def cache_epoch() -> int:
+    return _CACHE_EPOCH
 
 
 def _connect() -> sqlite3.Connection:
@@ -316,6 +326,7 @@ def rebuild_hot_index() -> dict[str, Any]:
         rows = _active_vector_rows()
         _hot_index().load_from_rows(rows)
         _meta_set("index_last_rebuild_at", str(time.time()))
+        _bump_cache_epoch()
         return {
             "status": "ok",
             "count": len(rows),
@@ -504,6 +515,7 @@ def add(
         conn.commit()
         _hot_index().add_or_update(file_id, embedding)
         _maybe_dual_write_chroma(doc_id, embedding, metadata, document)
+        _bump_cache_epoch()
 
 
 def _find_doc_id_by_path(path: str) -> str | None:
@@ -527,12 +539,39 @@ def delete(doc_id: str) -> None:
         conn.execute("DELETE FROM fts_content WHERE file_id = ?", (str(file_id),))
         conn.commit()
         _hot_index().delete(file_id)
+        _bump_cache_epoch()
 
 
 def delete_by_path(path: str | Path) -> None:
     doc_id = _find_doc_id_by_path(str(path))
     if doc_id:
         delete(doc_id)
+
+
+def retire_path_versions(path: str | Path, *, keep_doc_id: str) -> int:
+    with _LOCK:
+        conn = _connect()
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM manifest
+            WHERE path = ? AND state = 'active' AND doc_id != ?
+            """,
+            (str(path), keep_doc_id),
+        ).fetchall()
+        if not rows:
+            return 0
+        file_ids = [int(row["id"]) for row in rows]
+        for file_id in file_ids:
+            conn.execute("UPDATE manifest SET state = 'deleted' WHERE id = ?", (file_id,))
+            conn.execute("DELETE FROM vectors WHERE file_id = ?", (file_id,))
+            conn.execute("DELETE FROM enrichment WHERE file_id = ?", (file_id,))
+            conn.execute("DELETE FROM fts_content WHERE file_id = ?", (str(file_id),))
+        conn.commit()
+        for file_id in file_ids:
+            _hot_index().delete(file_id)
+        _bump_cache_epoch()
+        return len(file_ids)
 
 
 def exists(doc_id: str) -> bool:
@@ -593,6 +632,7 @@ def update_metadata(doc_id: str, metadata: dict[str, Any]) -> None:
             ),
         )
         conn.commit()
+        _bump_cache_epoch()
 
 
 def get_sources() -> list[str]:

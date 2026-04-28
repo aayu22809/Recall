@@ -142,9 +142,6 @@ def ingest_file(
     if store.exists(doc_id):
         return {"status": "skipped", "reason": "already embedded", "id": doc_id, "path": str(path)}
 
-    # Remove any previous active row for this path before adding the new content hash.
-    store.delete_by_path(path)
-
     caption: str | None = None
     if category in {"image", "audio", "video"} and config.ENABLE_OPTIONAL_CAPTIONING:
         _cpu_guard()
@@ -172,6 +169,7 @@ def ingest_file(
     }
 
     store.add(doc_id, embedding, metadata, document=document, enrichment=enrichment)
+    store.retire_path_versions(path, keep_doc_id=doc_id)
     return {"status": "embedded", "id": doc_id, "path": str(path), "category": category}
 
 

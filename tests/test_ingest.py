@@ -42,6 +42,11 @@ def test_text_file_ingested(monkeypatch: Any, tmp_path: Path, fake_embedding: li
         captured["enrichment"] = enrichment or {}
 
     monkeypatch.setattr(ingest.store, "add", fake_add)
+    monkeypatch.setattr(
+        ingest.store,
+        "retire_path_versions",
+        lambda path, *, keep_doc_id: captured.__setitem__("retired", (str(path), keep_doc_id)),
+    )
     result = ingest.ingest_file(p, source="manual")
 
     assert result["status"] == "embedded"
@@ -55,3 +60,38 @@ def test_text_file_ingested(monkeypatch: Any, tmp_path: Path, fake_embedding: li
         "exif_date": "",
         "exif_camera": "",
     }
+    assert captured["retired"] == (str(p.resolve()), captured["doc_id"])
+
+
+def test_ingest_failure_does_not_retire_path_versions(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "note.txt"
+    p.write_text("hello world")
+
+    calls = {"add": 0, "retire": 0}
+    monkeypatch.setattr(ingest.store, "exists", lambda _doc_id: False)
+    monkeypatch.setattr(
+        ingest.store,
+        "add",
+        lambda *_a, **_k: calls.__setitem__("add", calls["add"] + 1),
+    )
+    monkeypatch.setattr(
+        ingest.store,
+        "retire_path_versions",
+        lambda *_a, **_k: calls.__setitem__("retire", calls["retire"] + 1),
+    )
+    monkeypatch.setattr(
+        ingest.embedder,
+        "embed_text",
+        lambda _text: (_ for _ in ()).throw(RuntimeError("embed fail")),
+    )
+
+    try:
+        ingest.ingest_file(p, source="manual")
+    except RuntimeError:
+        pass
+
+    assert calls["add"] == 0
+    assert calls["retire"] == 0
