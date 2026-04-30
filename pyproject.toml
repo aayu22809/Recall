@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vector-embedded-finder"
 version = "0.2.0"
-description = "Local multimodal memory with semantic search, powered by Gemini Embedding 2 and ChromaDB"
+description = "Local-first multimodal memory with hybrid semantic search, sqlite durability, and a persistent Recall daemon"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
@@ -26,6 +26,9 @@ dependencies = [
     "requests-oauthlib>=1.3.0",
     "beautifulsoup4>=4.12.0",
     "pypdf>=4.0.0",
+    "hnswlib>=0.8.0",
+    "sentence-transformers>=3.0.0",
+    "Pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]

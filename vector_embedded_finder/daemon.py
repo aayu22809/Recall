@@ -1,18 +1,8 @@
-"""Persistent search daemon — FastAPI server on 127.0.0.1:19847.
+"""Persistent Recall daemon.
 
-CLI: vef-daemon start | stop | status | sync [source] | check-embed
-
-Design notes:
-- Uses FastAPI lifespan (not the deprecated on_event) for startup/shutdown.
-- Sources are tracked in an in-memory set (_known_sources), populated at
-  startup from a sampled scan and updated on every /ingest call. This avoids
-  the O(n) full-collection scan that the naive implementation would require.
-- Connector syncs run in a dedicated background thread (_connector_sync_loop).
-  The thread checks every 60s and only syncs when the daemon has been idle
-  (no /search requests) for at least 30 seconds.
-- cmd_start polls /health for up to 6 seconds so "Daemon started" only
-  prints when the daemon is actually healthy, not just when the process spawns.
-- stderr is redirected to ~/.vef/daemon.log so crashes are diagnosable.
+Primary transport is a Unix domain socket under ~/.recall/recall.sock.
+Optional localhost HTTP compatibility can be enabled with
+RECALL_ENABLE_COMPAT_HTTP=1 for migration and diagnostics.
 """
 
 from __future__ import annotations
@@ -20,9 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-import errno
 import signal
-import socket
 import sys
 import threading
 import time as _time
@@ -31,21 +19,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, List, Optional
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
-# ── Shared state ──────────────────────────────────────────────────────────────
-
-_last_search_time: float = 0.0   # updated by /search; read by sync thread
-_known_sources: set[str] = set()  # populated at startup; updated on ingest
+_last_search_time: float = 0.0
 _sync_lock = threading.Lock()
-_sync_done = threading.Event()   # set whenever a sync run completes
-_last_sync_result: dict[str, dict] = {}  # result of the most recent sync run
+_sync_done = threading.Event()
+_last_sync_result: dict[str, dict] = {}
 _last_connector_sync: dict[str, float] = {}
 _ingest_lock = threading.Lock()
 _ingest_in_flight = 0
+_watcher = None
+_watcher_queue_depth: Callable[[], int] | None = None
+_watcher_lock = threading.Lock()
 
 from . import config as _config
-SYNC_STATE_FILE = _config.VEF_DIR / "sync_state.json"
+
+SYNC_STATE_FILE = _config.RECALL_HOME / "sync_state.json"
 
 
 def _load_sync_state() -> dict[str, float]:
@@ -62,7 +53,7 @@ def _load_sync_state() -> dict[str, float]:
 
 def _save_sync_state() -> None:
     try:
-        _config.ensure_vef_dirs()
+        _config.ensure_runtime_dirs()
         payload = {name: float(ts) for name, ts in _last_connector_sync.items()}
         SYNC_STATE_FILE.write_text(json.dumps(payload, indent=2, sort_keys=True))
     except Exception as exc:
@@ -70,7 +61,6 @@ def _save_sync_state() -> None:
 
 
 def _is_idle() -> bool:
-    """True when no search has happened in the last 30 seconds."""
     return _time.time() - _last_search_time > 30
 
 
@@ -80,11 +70,7 @@ def _track_ingest(delta: int) -> None:
         _ingest_in_flight = max(0, _ingest_in_flight + delta)
 
 
-# ── Connector sync background thread ─────────────────────────────────────────
-
-
 def _connector_specs() -> dict[str, tuple[float, str, str]]:
-    """Connector config mapping: name -> (interval_s, module, class)."""
     from . import config
 
     return {
@@ -103,7 +89,6 @@ def _run_connector_sync_once(
     force: bool,
     only_sources: set[str] | None = None,
 ) -> dict[str, dict]:
-    """Run one connector sync pass and return per-connector status."""
     import importlib
 
     specs = _connector_specs()
@@ -114,8 +99,6 @@ def _run_connector_sync_once(
     global _last_sync_result
 
     status: dict[str, dict] = {}
-    # Non-blocking try.  If lock is busy, return in_progress immediately so
-    # callers can switch to polling mode rather than blocking indefinitely.
     acquired = _sync_lock.acquire(blocking=False)
     if not acquired:
         return {name: {"status": "skipped", "reason": "sync_in_progress"} for name in specs}
@@ -125,11 +108,9 @@ def _run_connector_sync_once(
         for name, (interval, module_path, class_name) in specs.items():
             if only_sources and name not in only_sources:
                 continue
-
             if not force and now - _last_connector_sync[name] < interval:
                 status[name] = {"status": "skipped", "reason": "interval_not_reached"}
                 continue
-
             try:
                 module = importlib.import_module(module_path)
                 conn_class = getattr(module, class_name)
@@ -137,7 +118,6 @@ def _run_connector_sync_once(
                 if not conn.is_authenticated():
                     status[name] = {"status": "skipped", "reason": "not_authenticated"}
                     continue
-
                 since: datetime | None = None
                 if _last_connector_sync[name] > 0:
                     since = datetime.fromtimestamp(_last_connector_sync[name], tz=timezone.utc)
@@ -150,17 +130,15 @@ def _run_connector_sync_once(
                     should_pause=_should_pause,
                     budget_s=_config.CONNECTOR_SYNC_BUDGET_S,
                 )
-
-                embedded = sum(1 for r in results if r.get("status") == "embedded")
-                errors = sum(1 for r in results if r.get("status") == "error")
-                skipped = sum(1 for r in results if r.get("status") == "skipped")
-                had_partial = errors > 0 or (embedded == 0 and skipped > 0) or (embedded > 0 and (errors > 0 or skipped > 0))
+                embedded = sum(1 for row in results if row.get("status") == "embedded")
+                errors = sum(1 for row in results if row.get("status") == "error")
+                skipped = sum(1 for row in results if row.get("status") == "skipped")
+                had_partial = errors > 0 or (embedded == 0 and skipped > 0) or (
+                    embedded > 0 and (errors > 0 or skipped > 0)
+                )
                 if embedded > 0:
                     _last_connector_sync[name] = _time.time()
                     _save_sync_state()
-                if embedded > 0:
-                    _known_sources.add(name)
-
                 status[name] = {
                     "status": "partial" if had_partial else "ok",
                     "embedded": embedded,
@@ -168,7 +146,6 @@ def _run_connector_sync_once(
                 }
                 if errors > 0:
                     status[name]["error_count"] = errors
-                logger.info("Connector sync %s: %d new items (of %d)", name, embedded, len(results))
             except Exception as exc:
                 status[name] = {"status": "error", "error": str(exc)}
                 logger.warning("Connector sync failed for %s: %s", name, exc)
@@ -180,106 +157,103 @@ def _run_connector_sync_once(
 
 
 def _connector_sync_loop() -> None:
-    """Run all authenticated connectors at their configured intervals."""
-
-    # Give the daemon a 10s head-start before the first sync attempt.
     _time.sleep(10)
-
     while True:
-        _time.sleep(60)  # check every minute
-
+        _time.sleep(60)
         if not _is_idle():
-            logger.debug("Connector sync skipped — daemon not idle")
             continue
-
         _run_connector_sync_once(force=False)
-
-
-# ── FastAPI app ───────────────────────────────────────────────────────────────
 
 
 def _build_app():
     from fastapi import Body, FastAPI, HTTPException
     from pydantic import BaseModel, ValidationError
 
-    # ── Lifespan (replaces deprecated on_event) ───────────────────────────────
+    def _load_watched_dirs() -> list[str]:
+        if not _config.WATCHED_DIRS_FILE.exists():
+            return []
+        try:
+            payload = json.loads(_config.WATCHED_DIRS_FILE.read_text())
+            if isinstance(payload, list):
+                return [str(row) for row in payload if row]
+        except Exception:
+            pass
+        return []
+
+    def _persist_watched_dirs(dirs: list[str]) -> None:
+        _config.ensure_runtime_dirs()
+        _config.WATCHED_DIRS_FILE.write_text(json.dumps(dirs, indent=2))
+
+    def _on_new_file(path: Path) -> None:
+        from .ingest import ingest_file
+
+        try:
+            if path.exists():
+                _track_ingest(1)
+                ingest_file(path, source="files")
+        except Exception as exc:
+            logger.debug("Auto-index failed for %s: %s", path, exc)
+        finally:
+            _track_ingest(-1)
+
+    def _on_delete_file(path: Path) -> None:
+        from . import store
+
+        try:
+            store.delete_by_path(path)
+        except Exception as exc:
+            logger.debug("Delete handling failed for %s: %s", path, exc)
+
+    def _restart_watcher(dirs: list[str]) -> None:
+        from .watcher import FileWatcher
+
+        resolved_dirs = [Path(row).expanduser().resolve() for row in dirs]
+        existing_dirs = [row for row in resolved_dirs if row.exists()]
+        with _watcher_lock:
+            global _watcher_queue_depth, _watcher
+            if _watcher is not None:
+                _watcher.stop()
+                _watcher = None
+                _watcher_queue_depth = None
+            if not existing_dirs:
+                return
+            watcher = FileWatcher()
+            watcher.start(existing_dirs, _on_new_file, delete_callback=_on_delete_file)
+            _watcher = watcher
+            _watcher_queue_depth = watcher.queued
+            logger.info("File watcher started on %d directories", len(existing_dirs))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        # ── Startup ───────────────────────────────────────────────────────────
-        from . import store, embedder, config
+        from . import embedder, migration, store
 
-        config.ensure_vef_dirs()
-        if config.EMBEDDING_PROVIDER == "gemini":
-            try:
-                config.get_api_key()
-            except ValueError as exc:
-                logger.error("Startup failed: %s", exc)
-                raise RuntimeError(str(exc)) from exc
-        store._get_collection()
+        _config.ensure_runtime_dirs()
+        migration.ensure_migrated()
+        store.initialize()
         embedder.warmup_provider()
         _last_connector_sync.update(_load_sync_state())
 
-        # Pre-populate sources cache without a full scan.
         try:
-            coll = store._get_collection()
-            total = coll.count()
-            sample = coll.get(limit=min(total, 5000), include=["metadatas"])
-            for m in sample.get("metadatas") or []:
-                if m and m.get("source"):
-                    _known_sources.add(m["source"])
-            logger.debug("Sources cache pre-populated: %s", sorted(_known_sources))
-        except Exception as exc:
-            logger.warning("Could not pre-populate sources cache: %s", exc)
-
-        # Start filesystem watcher if directories are configured.
-        watcher = None
-        try:
-            if config.WATCHED_DIRS_FILE.exists():
-                dirs_data = json.loads(config.WATCHED_DIRS_FILE.read_text())
-                dirs = [Path(d) for d in dirs_data if d]
-                if dirs:
-                    from .watcher import FileWatcher
-                    from .ingest import ingest_file
-
-                    def _on_new_file(p: Path) -> None:
-                        try:
-                            if p.exists():
-                                _track_ingest(1)
-                                result = ingest_file(p, source="files")
-                                if result.get("status") == "embedded":
-                                    _known_sources.add("files")
-                                logger.info("Auto-indexed: %s", p)
-                        except Exception as exc:
-                            logger.debug("Auto-index failed for %s: %s", p, exc)
-                        finally:
-                            _track_ingest(-1)
-
-                    watcher = FileWatcher()
-                    watcher.start(dirs, _on_new_file)
-                    logger.info("File watcher started on %d directories", len(dirs))
+            _restart_watcher(_load_watched_dirs())
         except Exception as exc:
             logger.warning("Could not start file watcher: %s", exc)
 
-        # Start connector sync background thread.
         sync_thread = threading.Thread(
             target=_connector_sync_loop,
             daemon=True,
-            name="vef-connector-sync",
+            name="recall-connector-sync",
         )
         sync_thread.start()
+        logger.info("Recall daemon ready at %s", _config.SOCKET_PATH)
+        yield
+        with _watcher_lock:
+            global _watcher_queue_depth, _watcher
+            if _watcher is not None:
+                _watcher.stop()
+                _watcher = None
+            _watcher_queue_depth = None
 
-        logger.info("VEF daemon ready — port %d", config.DAEMON_PORT)
-
-        yield  # ── server is now running ──────────────────────────────────────
-
-        # ── Shutdown ──────────────────────────────────────────────────────────
-        if watcher:
-            watcher.stop()
-
-    app = FastAPI(title="VEF Daemon", version="1.1.0", lifespan=lifespan)
-
-    # ── Models ────────────────────────────────────────────────────────────────
+    app = FastAPI(title="Recall Daemon", version="2.0.0", lifespan=lifespan)
 
     class SearchRequest(BaseModel):
         query: str
@@ -306,67 +280,71 @@ def _build_app():
     class SyncRequest(BaseModel):
         source: Optional[str] = None
 
-    # ── Routes ────────────────────────────────────────────────────────────────
+    @app.get("/health")
+    async def health():
+        return {"status": "ok"}
+
+    @app.get("/ready")
+    async def ready():
+        from . import migration, store
+
+        return {
+            "status": "ok",
+            "migration": migration.status().get("status", "not_started"),
+            "index": store.index_status(),
+        }
+
+    @app.get("/stats")
+    async def stats():
+        from . import store
+
+        return {"status": "ok", "count": store.count()}
+
+    @app.get("/sources")
+    async def sources():
+        from . import store
+
+        return {"sources": store.get_sources()}
+
+    @app.get("/progress")
+    async def progress():
+        from . import store
+
+        with _ingest_lock:
+            in_flight = _ingest_in_flight
+        queued = _watcher_queue_depth() if _watcher_queue_depth else 0
+        return {
+            "indexing": (in_flight > 0 or queued > 0),
+            "queued": queued + in_flight,
+            "total_indexed": store.count(),
+        }
 
     @app.post("/search", response_model=List[SearchResult])
     async def search(req: dict = Body(...)):
         global _last_search_time
         _last_search_time = _time.time()
-
         try:
             parsed = SearchRequest.model_validate(req)
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.errors()) from exc
-
         if not parsed.query.strip():
             return []
+        from .search import search as recall_search
 
-        from .search import search as vef_search
         try:
-            results = vef_search(
-                parsed.query,
-                n_results=parsed.n_results,
-                sources=parsed.sources,
-            )
-            return results
+            return recall_search(parsed.query, n_results=parsed.n_results, sources=parsed.sources)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    @app.get("/health")
-    async def health():
-        # Liveness check must be constant-time. Do NOT touch the DB here —
-        # chromadb's count() serialises and can take hundreds of ms under load,
-        # which would make the daemon look dead whenever Raycast polls.
-        return {"status": "ok"}
-
-    @app.get("/stats")
-    async def stats():
-        # Potentially slow — calls chromadb count(). Separate from /health
-        # so liveness probes don't pay this cost.
-        from . import store
-        return {"status": "ok", "count": store.count()}
-
-    @app.get("/sources")
-    async def sources():
-        return {"sources": sorted(_known_sources)}
-
-    @app.get("/progress")
-    async def progress():
-        from . import store
-        with _ingest_lock:
-            in_flight = _ingest_in_flight
-        return {"indexing": in_flight > 0, "queued": in_flight, "total_indexed": store.count()}
-
     @app.post("/ingest")
     async def ingest(req: dict = Body(...)):
-        from .ingest import ingest_file
         import asyncio
+        from .ingest import ingest_file
 
         try:
             parsed = IngestRequest.model_validate(req)
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.errors()) from exc
-
         loop = asyncio.get_running_loop()
         _track_ingest(1)
         try:
@@ -376,16 +354,14 @@ def _build_app():
             )
         finally:
             _track_ingest(-1)
-        if result.get("status") == "embedded":
-            _known_sources.add(parsed.source)
         return result
 
     @app.get("/connector-status")
     async def connector_status():
         import importlib
-        specs = _connector_specs()
+
         result: dict[str, dict] = {}
-        for name, (interval, module_path, class_name) in specs.items():
+        for name, (interval, module_path, class_name) in _connector_specs().items():
             last = _last_connector_sync.get(name, 0.0)
             try:
                 module = importlib.import_module(module_path)
@@ -415,22 +391,14 @@ def _build_app():
             if parsed.source:
                 parsed_source = parsed.source.strip().lower()
                 if parsed_source not in _connector_specs():
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Unknown source '{parsed_source}'. Valid sources: {', '.join(sorted(_connector_specs()))}",
-                    )
+                    raise HTTPException(status_code=400, detail=f"Unknown source '{parsed_source}'")
 
-        # Always return instantly — start sync in background if not already running.
         if _sync_lock.locked():
             return {"status": "in_progress", "last_sync": _last_sync_result}
 
-        # Fire and forget: run sync in daemon thread, don't await it.
         only = {parsed_source} if parsed_source else None
         loop = asyncio.get_running_loop()
-        loop.run_in_executor(
-            None,
-            lambda: _run_connector_sync_once(force=True, only_sources=only),
-        )
+        loop.run_in_executor(None, lambda: _run_connector_sync_once(force=True, only_sources=only))
         return {"status": "started", "last_sync": _last_sync_result}
 
     @app.get("/sync-running")
@@ -439,146 +407,221 @@ def _build_app():
 
     @app.get("/watched-dirs")
     async def get_watched_dirs():
-        from . import config
-        dirs: list[str] = []
-        if config.WATCHED_DIRS_FILE.exists():
-            try:
-                dirs = json.loads(config.WATCHED_DIRS_FILE.read_text())
-            except Exception:
-                pass
-        return {"dirs": dirs}
+        return {"dirs": _load_watched_dirs()}
 
     @app.post("/watched-dirs")
     async def add_watched_dir(req: dict = Body(default={})):
-        from . import config
         path = str(req.get("path", "")).strip()
         if not path:
             raise HTTPException(status_code=400, detail="path required")
-        from pathlib import Path as _Path
-        resolved = str(_Path(path).expanduser().resolve())
-        dirs: list[str] = []
-        if config.WATCHED_DIRS_FILE.exists():
-            try:
-                dirs = json.loads(config.WATCHED_DIRS_FILE.read_text())
-            except Exception:
-                pass
+        resolved = str(Path(path).expanduser().resolve())
+        dirs = _load_watched_dirs()
         if resolved not in dirs:
             dirs.append(resolved)
-            config.WATCHED_DIRS_FILE.write_text(json.dumps(dirs, indent=2))
+            _persist_watched_dirs(dirs)
+            try:
+                _restart_watcher(dirs)
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"Watcher reload failed: {exc}") from exc
         return {"dirs": dirs}
 
     @app.delete("/watched-dirs")
     async def remove_watched_dir(req: dict = Body(default={})):
-        from . import config
         path = str(req.get("path", "")).strip()
-        dirs: list[str] = []
-        if config.WATCHED_DIRS_FILE.exists():
-            try:
-                dirs = json.loads(config.WATCHED_DIRS_FILE.read_text())
-            except Exception:
-                pass
-        dirs = [d for d in dirs if d != path]
-        config.WATCHED_DIRS_FILE.write_text(json.dumps(dirs, indent=2))
+        resolved = str(Path(path).expanduser().resolve()) if path else ""
+        dirs = [row for row in _load_watched_dirs() if row != path and row != resolved]
+        _persist_watched_dirs(dirs)
+        try:
+            _restart_watcher(dirs)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Watcher reload failed: {exc}") from exc
         return {"dirs": dirs}
 
     @app.post("/configure")
     async def configure(req: dict = Body(default={})):
-        """Write API keys to ~/.vef/.env so they persist across daemon restarts."""
-        from pathlib import Path as _Path
-        env_file = _Path.home() / ".vef" / ".env"
+        env_file = _config.RECALL_HOME / ".env"
         env_file.parent.mkdir(parents=True, exist_ok=True)
-        lines: list[str] = []
-        if env_file.exists():
-            lines = env_file.read_text().splitlines()
+        lines: list[str] = env_file.read_text().splitlines() if env_file.exists() else []
 
         def _set(key: str, val: str) -> None:
             nonlocal lines
-            lines = [l for l in lines if not l.startswith(f"{key}=")]
+            lines = [line for line in lines if not line.startswith(f"{key}=")]
             lines.append(f"{key}={val}")
 
-        if req.get("gemini_api_key"):
-            _set("GEMINI_API_KEY", str(req["gemini_api_key"]))
-            os.environ["GEMINI_API_KEY"] = str(req["gemini_api_key"])
-        if req.get("canvas_api_key"):
-            _set("CANVAS_API_KEY", str(req["canvas_api_key"]))
-            os.environ["CANVAS_API_KEY"] = str(req["canvas_api_key"])
-        if req.get("canvas_base_url"):
-            _set("CANVAS_BASE_URL", str(req["canvas_base_url"]))
-            os.environ["CANVAS_BASE_URL"] = str(req["canvas_base_url"])
-        if req.get("schoology_consumer_key"):
-            _set("SCHOOLOGY_CONSUMER_KEY", str(req["schoology_consumer_key"]))
-            os.environ["SCHOOLOGY_CONSUMER_KEY"] = str(req["schoology_consumer_key"])
-        if req.get("schoology_consumer_secret"):
-            _set("SCHOOLOGY_CONSUMER_SECRET", str(req["schoology_consumer_secret"]))
-            os.environ["SCHOOLOGY_CONSUMER_SECRET"] = str(req["schoology_consumer_secret"])
+        for src_key, env_key in (
+            ("gemini_api_key", "GEMINI_API_KEY"),
+            ("canvas_api_key", "CANVAS_API_KEY"),
+            ("canvas_base_url", "CANVAS_BASE_URL"),
+            ("schoology_consumer_key", "SCHOOLOGY_CONSUMER_KEY"),
+            ("schoology_consumer_secret", "SCHOOLOGY_CONSUMER_SECRET"),
+        ):
+            value = req.get(src_key)
+            if value:
+                _set(env_key, str(value))
+                os.environ[env_key] = str(value)
         env_file.write_text("\n".join(lines) + "\n")
         return {"ok": True}
+
+    @app.get("/model-status")
+    async def model_status():
+        from . import model_manager
+
+        return model_manager.model_status()
+
+    @app.get("/index-status")
+    async def index_status():
+        from . import store
+
+        return store.index_status()
+
+    @app.get("/migration-status")
+    async def migration_status():
+        from . import migration
+
+        return migration.status()
+
+    @app.post("/rebuild-index")
+    async def rebuild_index():
+        from . import store
+
+        return store.rebuild_hot_index()
 
     return app
 
 
-# ── Server start ──────────────────────────────────────────────────────────────
-
-
 def _configure_logging() -> None:
-    """Install a rotating file handler for ~/.vef/daemon.log.
-
-    Prevents unbounded growth from repetitive warnings (e.g. chromadb compactor
-    errors spamming _safe_count). Keeps the last 2 MB * 3 rotations.
-    """
     from logging.handlers import RotatingFileHandler
-    from . import config
 
     root = logging.getLogger()
-    # If already configured (hot reload), skip.
     if any(isinstance(h, RotatingFileHandler) for h in root.handlers):
         return
 
-    config.ensure_vef_dirs()
-    log_path = config.VEF_DIR / "daemon.log"
+    _config.ensure_runtime_dirs()
+    log_path = _config.LOG_DIR / "daemon.log"
     handler = RotatingFileHandler(
         log_path,
         maxBytes=2 * 1024 * 1024,
         backupCount=3,
         encoding="utf-8",
     )
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    ))
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
     root.addHandler(handler)
     root.setLevel(logging.INFO)
 
 
+def _uds_client(timeout: float = 2.0) -> httpx.Client:
+    transport = httpx.HTTPTransport(uds=str(_config.SOCKET_PATH))
+    return httpx.Client(transport=transport, base_url=_config.RECALL_SOCKET_BASE_URL, timeout=timeout)
+
+
+def _poll_health_socket(timeout_s: float) -> bool:
+    deadline = _time.time() + timeout_s
+    while _time.time() < deadline:
+        try:
+            with _uds_client(timeout=2.0) as client:
+                resp = client.get("/health")
+                if resp.is_success:
+                    return True
+        except Exception:
+            pass
+        _time.sleep(0.3)
+    return False
+
+
+def _poll_health_http(host: str, port: int, timeout_s: float) -> bool:
+    deadline = _time.time() + timeout_s
+    while _time.time() < deadline:
+        try:
+            resp = httpx.get(f"http://{host}:{port}/health", timeout=2.0)
+            if resp.is_success:
+                return True
+        except Exception:
+            pass
+        _time.sleep(0.3)
+    return False
+
+
+def _build_compat_proxy_app():
+    from fastapi import FastAPI, Request, Response
+
+    app = FastAPI(title="Recall Compat Proxy", version="1.0.0")
+
+    async def _forward(path: str, request: Request) -> Response:
+        upstream = f"/{path}" if path else "/"
+        body = await request.body()
+        headers = {
+            key: value
+            for key, value in request.headers.items()
+            if key.lower() not in {"host", "content-length", "connection"}
+        }
+        transport = httpx.AsyncHTTPTransport(uds=str(_config.SOCKET_PATH))
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url=_config.RECALL_SOCKET_BASE_URL,
+            timeout=60.0,
+        ) as client:
+            upstream_resp = await client.request(
+                request.method,
+                upstream,
+                params=request.query_params,
+                content=body,
+                headers=headers,
+            )
+        response_headers = {
+            key: value
+            for key, value in upstream_resp.headers.items()
+            if key.lower() not in {"content-length", "transfer-encoding", "connection"}
+        }
+        return Response(
+            content=upstream_resp.content,
+            status_code=upstream_resp.status_code,
+            headers=response_headers,
+            media_type=upstream_resp.headers.get("content-type"),
+        )
+
+    @app.api_route(
+        "/",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    )
+    async def proxy_root(request: Request) -> Response:
+        return await _forward("", request)
+
+    @app.api_route(
+        "/{path:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    )
+    async def proxy_path(path: str, request: Request) -> Response:
+        return await _forward(path, request)
+
+    return app
+
+
 def _run_server() -> None:
     import uvicorn
-    from . import config
 
-    config.ensure_vef_dirs()
+    _config.ensure_runtime_dirs()
     _configure_logging()
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.bind((config.DAEMON_HOST, config.DAEMON_PORT))
-    except OSError as exc:
-        if exc.errno == errno.EADDRINUSE:
-            if _poll_health(config.DAEMON_HOST, config.DAEMON_PORT, timeout_s=2.0):
-                print(f"another daemon already serving on {config.DAEMON_PORT}")
-                sys.exit(0)
-            print(f"port {config.DAEMON_PORT} already in use; try `vef-daemon stop`", file=sys.stderr)
-            sys.exit(1)
-        raise
-    finally:
+    if _config.SOCKET_PATH.exists():
         try:
-            sock.close()
+            _config.SOCKET_PATH.unlink()
         except Exception:
             pass
 
-    config.PID_FILE.write_text(str(os.getpid()))
+    _config.PID_FILE.write_text(str(os.getpid()))
 
     def _cleanup(signum=None, frame=None):
         try:
-            config.PID_FILE.unlink(missing_ok=True)
+            _config.PID_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            _config.SOCKET_PATH.unlink(missing_ok=True)
         except Exception:
             pass
         sys.exit(0)
@@ -587,29 +630,32 @@ def _run_server() -> None:
     signal.signal(signal.SIGINT, _cleanup)
 
     app = _build_app()
+    compat_thread = None
+    if _config.RECALL_ENABLE_COMPAT_HTTP:
+        compat_app = _build_compat_proxy_app()
+        compat_thread = threading.Thread(
+            target=uvicorn.run,
+            kwargs={
+                "app": compat_app,
+                "host": _config.DAEMON_HOST,
+                "port": _config.DAEMON_PORT,
+                "log_level": "warning",
+                "access_log": False,
+            },
+            daemon=True,
+            name="recall-compat-http",
+        )
+        compat_thread.start()
 
     try:
-        try:
-            uvicorn.run(
-                app,
-                host=config.DAEMON_HOST,
-                port=config.DAEMON_PORT,
-                log_level="warning",
-                access_log=False,
-            )
-        except OSError as exc:
-            if exc.errno == errno.EADDRINUSE:
-                if _poll_health(config.DAEMON_HOST, config.DAEMON_PORT, timeout_s=2.0):
-                    print(f"another daemon already serving on {config.DAEMON_PORT}")
-                    sys.exit(0)
-                print(f"port {config.DAEMON_PORT} already in use; try `vef-daemon stop`", file=sys.stderr)
-                sys.exit(1)
-            raise
+        uvicorn.run(
+            app,
+            uds=str(_config.SOCKET_PATH),
+            log_level="warning",
+            access_log=False,
+        )
     finally:
         _cleanup()
-
-
-# ── CLI commands ──────────────────────────────────────────────────────────────
 
 
 def _pid_running(pid: int) -> bool:
@@ -621,96 +667,45 @@ def _pid_running(pid: int) -> bool:
 
 
 def _read_pid() -> int | None:
-    from . import config
     try:
-        return int(config.PID_FILE.read_text().strip())
+        return int(_config.PID_FILE.read_text().strip())
     except Exception:
         return None
 
 
-def _poll_health(host: str, port: int, timeout_s: float) -> bool:
-    """Poll /health until it responds OK or timeout expires.
-
-    /health is a constant-time liveness check (see app.health). We give httpx
-    a generous timeout so a momentary CPU spike does not fail the probe.
-    """
-    import socket
-    deadline = _time.time() + timeout_s
-    while _time.time() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=0.3):
-                pass
-            import httpx
-            resp = httpx.get(f"http://{host}:{port}/health", timeout=2.0)
-            if resp.is_success:
-                return True
-        except Exception:
-            pass
-        _time.sleep(0.3)
-    return False
-
-
-def _port_in_use(host: str, port: int) -> bool:
-    """True if something is already bound to host:port (regardless of pid file)."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(0.3)
-    try:
-        sock.bind((host, port))
-        return False
-    except OSError as exc:
-        return exc.errno == errno.EADDRINUSE
-    finally:
-        try:
-            sock.close()
-        except Exception:
-            pass
-
-
 def cmd_start() -> None:
-    from . import config
-    config.ensure_vef_dirs()
-
-    # Case 1: PID file points at a live process — verify it's actually serving.
+    _config.ensure_runtime_dirs()
     pid = _read_pid()
     if pid and _pid_running(pid):
-        if _poll_health(config.DAEMON_HOST, config.DAEMON_PORT, timeout_s=3.0):
+        if _poll_health_socket(timeout_s=3.0):
             print(f"Daemon already running (pid {pid})")
             return
-        # Live pid but not healthy — kill it so we can start fresh.
         try:
             os.kill(pid, signal.SIGTERM)
-            for _ in range(10):
-                _time.sleep(0.2)
-                if not _pid_running(pid):
-                    break
-        except Exception:
+        except PermissionError:
+            print(f"Daemon process {pid} is unhealthy and cannot be terminated (permission denied).")
+            sys.exit(1)
+        except ProcessLookupError:
             pass
-        config.PID_FILE.unlink(missing_ok=True)
+        for _ in range(20):
+            _time.sleep(0.2)
+            if not _pid_running(pid):
+                break
+        if _pid_running(pid):
+            print(f"Daemon process {pid} is unhealthy and could not be stopped.")
+            print("Stop it manually and retry.")
+            sys.exit(1)
+        _config.PID_FILE.unlink(missing_ok=True)
+    elif pid:
+        _config.PID_FILE.unlink(missing_ok=True)
 
-    # Case 2: PID file stale — clear it.
-    if pid and not _pid_running(pid):
-        config.PID_FILE.unlink(missing_ok=True)
-
-    # Case 3: Port already in use by something that's not in our PID file.
-    # Check /health — if it's our daemon, treat as already running.
-    if _port_in_use(config.DAEMON_HOST, config.DAEMON_PORT):
-        if _poll_health(config.DAEMON_HOST, config.DAEMON_PORT, timeout_s=3.0):
-            print(f"Daemon already running on port {config.DAEMON_PORT} (pid file missing)")
-            return
-        print(
-            f"Port {config.DAEMON_PORT} is in use but /health is not responding.",
-            file=sys.stderr,
-        )
-        print("Run `vef-daemon stop` or `lsof -i :19847` to investigate.", file=sys.stderr)
-        sys.exit(1)
-
-    # Case 4: Fresh start. Spawn the daemon.
-    log_path = config.VEF_DIR / "daemon.log"
+    log_path = _config.LOG_DIR / "daemon.log"
     project_root = str(Path(__file__).parent.parent)
     env = os.environ.copy()
     existing_py_path = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{project_root}:{existing_py_path}" if existing_py_path else project_root
     import subprocess
+
     with open(log_path, "a") as log_fh:
         proc = subprocess.Popen(
             [sys.executable, "-m", "vector_embedded_finder.daemon", "_serve"],
@@ -721,19 +716,10 @@ def cmd_start() -> None:
             start_new_session=True,
         )
 
-    if _poll_health(config.DAEMON_HOST, config.DAEMON_PORT, timeout_s=15.0):
-        # Verify the child is still alive (it may have exited after health came up
-        # if another daemon races us — though we guarded against that above).
-        if proc.poll() is not None:
-            pid_from_file = _read_pid()
-            if pid_from_file:
-                print(f"Daemon running (pid {pid_from_file}); spawned helper pid {proc.pid} exited.")
-            else:
-                print("Daemon responding but spawned pid exited — investigate daemon.log.")
-            return
+    if _poll_health_socket(timeout_s=20.0):
         print(f"Daemon started (pid {proc.pid})")
     else:
-        print(f"Daemon process spawned (pid {proc.pid}) but did not respond within 15s.")
+        print(f"Daemon process spawned (pid {proc.pid}) but did not respond within 20s.")
         print(f"Check logs: {log_path}")
 
 
@@ -743,12 +729,10 @@ def cmd_stop() -> None:
         print("Daemon not running (no PID file)")
         return
     if not _pid_running(pid):
-        from . import config
-        config.PID_FILE.unlink(missing_ok=True)
+        _config.PID_FILE.unlink(missing_ok=True)
         print("Daemon not running (stale PID cleaned up)")
         return
     os.kill(pid, signal.SIGTERM)
-    # Wait briefly so subsequent commands don't see a stale state
     for _ in range(10):
         _time.sleep(0.3)
         if not _pid_running(pid):
@@ -757,69 +741,43 @@ def cmd_stop() -> None:
 
 
 def cmd_status() -> None:
-    from . import config
     pid = _read_pid()
     if not pid or not _pid_running(pid):
-        log_path = config.VEF_DIR / "daemon.log"
+        log_path = _config.LOG_DIR / "daemon.log"
         print("Daemon: stopped")
         if log_path.exists():
-            # Show last 5 lines of log to help diagnose crashes
             lines = log_path.read_text().splitlines()
             tail = lines[-5:] if len(lines) >= 5 else lines
             if any(tail):
                 print(f"Last log lines ({log_path}):")
-                for ln in tail:
-                    print(f"  {ln}")
+                for line in tail:
+                    print(f"  {line}")
         return
-
     try:
-        import httpx
-        # /stats may be slow if chromadb is backlogged — keep it short.
-        resp = httpx.get(
-            f"http://{config.DAEMON_HOST}:{config.DAEMON_PORT}/stats",
-            timeout=5.0,
-        )
-        data = resp.json()
-        print(f"Daemon: running (pid {pid}, {data.get('count', '?')} documents indexed)")
+        with _uds_client(timeout=5.0) as client:
+            stats = client.get("/stats").json()
+            ready = client.get("/ready").json()
+        print(f"Daemon: running (pid {pid}, {stats.get('count', '?')} documents indexed)")
+        print(f"Migration: {ready.get('migration', 'unknown')}")
     except Exception:
-        # Stats slow → fall back to /health for liveness.
-        try:
-            import httpx
-            resp = httpx.get(
-                f"http://{config.DAEMON_HOST}:{config.DAEMON_PORT}/health",
-                timeout=2.0,
-            )
-            if resp.is_success:
-                print(f"Daemon: running (pid {pid}, index stats unavailable)")
-                return
-        except Exception:
-            pass
-        print(f"Daemon: running (pid {pid}, health check failed — may still be starting up)")
+        print(f"Daemon: running (pid {pid}, health check failed)")
 
 
 def cmd_sync(source: str | None = None) -> None:
-    from . import config
-    import httpx
-
     payload = {"source": source} if source else {}
     try:
-        resp = httpx.post(
-            f"http://{config.DAEMON_HOST}:{config.DAEMON_PORT}/sync",
-            json=payload,
-            timeout=120.0,
-        )
-        resp.raise_for_status()
+        with _uds_client(timeout=120.0) as client:
+            resp = client.post("/sync", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
     except Exception as exc:
         print(f"Sync failed: {exc}")
         print("Start daemon first: vef-daemon start")
         sys.exit(1)
-
-    data = resp.json()
     sync_data = data.get("last_sync", {})
     if not sync_data:
         print("No connectors synced.")
         return
-
     for name in sorted(sync_data):
         result = sync_data[name]
         if result.get("status") == "ok":
@@ -838,11 +796,9 @@ def cmd_check_embed() -> None:
     except Exception as exc:
         print(f"Embedding provider check failed: {exc}")
         sys.exit(1)
-
     if not vec:
         print("Embedding provider check failed: empty embedding vector")
         sys.exit(1)
-
     print(f"Embedding provider OK (dimension {len(vec)})")
 
 
