@@ -1,0 +1,2 @@
+app/.build/**/*.pkg filter=lfs diff=lfs merge=lfs -text
+app/.build/**/*.pyz filter=lfs diff=lfs merge=lfs -text
