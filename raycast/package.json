@@ -2,21 +2,22 @@
   "$schema": "https://www.raycast.com/schemas/extension.json",
   "name": "recall",
   "title": "Recall",
-  "description": "Search local files and connected apps with semantic memory",
+  "description": "Private local search across your files, email, calendar, and notes",
   "icon": "command-icon.png",
-  "author": "hughp",
+  "author": "aayu22809",
   "categories": [
     "Productivity"
   ],
   "license": "MIT",
+  "platforms": ["macOS"],
   "preferences": [
     {
       "name": "pythonPackagePath",
       "title": "Python Package Path",
-      "description": "Absolute path to the vector-embedded-finder Python package (the directory containing vector_embedded_finder/)",
+      "description": "Absolute path to the Recall Python package (the directory containing vector_embedded_finder/)",
       "type": "textfield",
       "required": true,
-      "placeholder": "/path/to/vector-embedded-finder"
+      "placeholder": "/path/to/recall"
     },
     {
       "name": "pythonPath",
@@ -100,6 +101,7 @@
     "build": "ray build",
     "dev": "ray develop",
     "fix-lint": "ray lint --fix",
-    "lint": "ray lint"
+    "lint": "ray lint",
+    "publish": "ray publish"
   }
 }

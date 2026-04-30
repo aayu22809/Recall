@@ -1,4 +1,4 @@
-"""Trayce/Recall CLI commands."""
+"""Recall CLI commands."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ try:
 except Exception:
     _RICH_AVAILABLE = False
 
-# Trayce accent colour — matches setup_wizard
+# Recall accent colour
 _ACCENT = "#d97757"
 _DIM = "#737373"
 
@@ -118,7 +118,7 @@ def _cmd_status(_: argparse.Namespace) -> int:
         connector_status = _fetch_json("/connector-status")
     except Exception as exc:
         print(f"Daemon status check failed: {exc}")
-        print("Run: trayce start")
+        print("Run: recall start")
         return 1
 
     # /stats reports count. /health no longer includes it (liveness-only).
@@ -536,8 +536,135 @@ def _cmd_open_memory(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_doctor(_: argparse.Namespace) -> int:
+    """Health-check the Recall setup and print a status report."""
+    console = _console()
+    checks: list[tuple[str, bool, str]] = []
+    daemon_ok = False
+
+    # 1. Daemon reachable
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            r = client.get(f"{_daemon_base_url()}/health")
+        daemon_ok = r.status_code == 200
+    except Exception:
+        daemon_ok = False
+    checks.append(("Daemon reachable", daemon_ok, "Run: recall start"))
+
+    # 2. Embedding provider configured
+    provider = (os.environ.get("VEF_EMBEDDING_PROVIDER") or "").strip().lower()
+    if not provider:
+        try:
+            from dotenv import dotenv_values
+            for candidate in [config.VEF_DIR / ".env", config.PROJECT_DIR / ".env"]:
+                if candidate.exists():
+                    provider = (dotenv_values(candidate).get("VEF_EMBEDDING_PROVIDER") or "").strip().lower()
+                    if provider:
+                        break
+        except Exception:
+            pass
+    provider = provider or "gemini"
+
+    embed_ok = False
+    embed_hint = ""
+    if provider == "gemini":
+        key = os.environ.get("GEMINI_API_KEY", "")
+        if not key:
+            try:
+                from dotenv import dotenv_values
+                for candidate in [config.VEF_DIR / ".env", config.PROJECT_DIR / ".env"]:
+                    if candidate.exists():
+                        key = dotenv_values(candidate).get("GEMINI_API_KEY", "") or ""
+                        if key:
+                            break
+            except Exception:
+                pass
+        embed_ok = bool(key)
+        embed_hint = "Set GEMINI_API_KEY in ~/.vef/.env — get a free key at https://aistudio.google.com/apikey"
+    elif provider == "ollama":
+        ollama_url = os.environ.get("VEF_OLLAMA_BASE_URL", "http://localhost:11434")
+        try:
+            with httpx.Client(timeout=3.0) as client:
+                client.get(f"{ollama_url}/api/tags")
+            embed_ok = True
+        except Exception:
+            embed_ok = False
+            embed_hint = "Ollama not running — brew install ollama && brew services start ollama"
+    else:
+        embed_ok = True
+
+    checks.append((f"Embedding provider ({provider})", embed_ok, embed_hint))
+
+    # 3. Watched directories
+    watched_ok = False
+    try:
+        dirs_file = config.WATCHED_DIRS_FILE
+        if dirs_file.exists():
+            dirs = json.loads(dirs_file.read_text())
+            watched_ok = isinstance(dirs, list) and len(dirs) > 0
+    except Exception:
+        watched_ok = False
+    checks.append(("Watched directories configured", watched_ok, "Run: recall index ~/Documents"))
+
+    # 4. Index has documents (only if daemon is up)
+    if daemon_ok:
+        try:
+            stats = _fetch_json("/stats", timeout=5.0)
+            count = int(stats.get("count", 0))
+            checks.append((f"Index has documents ({count:,})", count > 0, "Run: recall sync  or  recall index <path>"))
+        except Exception:
+            checks.append(("Index has documents", False, "Run: recall sync"))
+
+    critical_failed = any(not passed for _, passed, _ in checks)
+
+    if console is None:
+        print("Recall doctor")
+        print("─" * 40)
+        for label, passed, hint in checks:
+            status = "[OK]  " if passed else "[FAIL]"
+            print(f"{status} {label}")
+            if not passed and hint:
+                print(f"       → {hint}")
+    else:
+        console.print()
+        console.print(f"  [bold]Recall doctor[/bold]  [{_DIM}]setup health check[/]")
+        console.print(f"  [{_DIM}]{'─' * 44}[/]")
+        console.print()
+        for label, passed, hint in checks:
+            if passed:
+                console.print(f"  [bold green]✔[/]  {label}")
+            else:
+                console.print(f"  [bold red]✗[/]  {label}")
+                if hint:
+                    console.print(f"     [{_DIM}]→ {hint}[/]")
+        console.print()
+
+    # 5. Connector status (informational)
+    if daemon_ok:
+        try:
+            connector_status = _fetch_json("/connector-status")
+            if connector_status:
+                if console is None:
+                    print("Connectors (optional):")
+                    for name in sorted(connector_status):
+                        authed = bool(connector_status[name].get("authenticated"))
+                        print(f"  {'✔' if authed else '✗'} {name}")
+                else:
+                    console.print(f"  [{_DIM}]Connectors (optional)[/]")
+                    console.print(f"  [{_DIM}]{'─' * 44}[/]")
+                    for name in sorted(connector_status):
+                        authed = bool(connector_status[name].get("authenticated"))
+                        dot = f"[bold {_ACCENT}]✔[/]" if authed else f"[{_DIM}]✗[/]"
+                        console.print(f"  {dot}  {name}")
+                    console.print()
+        except Exception:
+            pass
+
+    return 1 if critical_failed else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="trayce", description="Trayce local semantic memory CLI")
+    parser = argparse.ArgumentParser(prog="recall", description="Recall — local semantic search CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_start = sub.add_parser("start", help="Start daemon")
@@ -576,6 +703,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_open = sub.add_parser("open-memory", help="Open top matching search result")
     p_open.add_argument("query")
     p_open.set_defaults(func=_cmd_open_memory)
+
+    p_doctor = sub.add_parser("doctor", help="Check Recall setup health")
+    p_doctor.set_defaults(func=_cmd_doctor)
 
     return parser
 

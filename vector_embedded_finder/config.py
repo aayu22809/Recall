@@ -1,9 +1,57 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+KEYCHAIN_SERVICE = "ai.recall.app"
+
+
+def _resolve_secret(value: str | None) -> str | None:
+    """Resolve a `keychain://<account>` placeholder to its plaintext value.
+
+    The Tauri shell stores API keys and OAuth refresh tokens in the macOS
+    Keychain under service=ai.recall.app and writes a placeholder string
+    `keychain://<account>` to ~/.vef/.env so the daemon never has plaintext
+    secrets on disk. Plain (non-placeholder) values pass through unchanged
+    for backward compatibility with `.env` files predating the Tauri shell.
+    """
+    if not value or not isinstance(value, str):
+        return value
+    prefix = "keychain://"
+    if not value.startswith(prefix):
+        return value
+    account = value[len(prefix):].strip()
+    if not account:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "/usr/bin/security",
+                "find-generic-password",
+                "-s", KEYCHAIN_SERVICE,
+                "-a", account,
+                "-w",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.rstrip("\n") or None
+
+
+def _env(key: str, default: str = "") -> str:
+    """Read an env var, transparently resolving keychain:// placeholders."""
+    raw = os.environ.get(key, default)
+    resolved = _resolve_secret(raw)
+    return resolved if resolved is not None else (default or "")
+
 
 PROJECT_DIR = Path(__file__).parent.parent
 load_dotenv(PROJECT_DIR / ".env")
@@ -93,7 +141,7 @@ WATCHED_DIRS_FILE = VEF_DIR / "watched_dirs.json"
 
 
 def get_api_key() -> str:
-    key = os.environ.get("GEMINI_API_KEY", "")
+    key = _env("GEMINI_API_KEY")
     if not key:
         raise ValueError(
             "GEMINI_API_KEY not set. Add it to .env or set as environment variable."
@@ -102,7 +150,7 @@ def get_api_key() -> str:
 
 
 def get_nim_api_key() -> str:
-    key = os.environ.get("NIM_API_KEY", "")
+    key = _env("NIM_API_KEY")
     if not key:
         raise ValueError(
             "NIM_API_KEY not set. Add it to .env or set as environment variable."
