@@ -225,10 +225,11 @@ def _build_app():
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        from . import embedder, migration, store
+        from . import embedder, keychain, migration, store
 
         _config.ensure_runtime_dirs()
         migration.ensure_migrated()
+        keychain.migrate_legacy_credentials()
         store.initialize()
         embedder.warmup_provider()
         _last_connector_sync.update(_load_sync_state())
