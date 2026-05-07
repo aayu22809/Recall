@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import os
 import re
-import logging
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
+from typing import Any
 
-from . import embedder, store
-from .reranker import reciprocal_rank_fusion
+from . import config, embedder, store
+from .reranker import maybe_rerank, reciprocal_rank_fusion
 
-logger = logging.getLogger(__name__)
-
-MIN_SIMILARITY = float(os.environ.get("VEF_MIN_SIMILARITY", "0.45"))
+MIN_SIMILARITY = float(os.environ.get("VEF_MIN_SIMILARITY", "0.35"))
 RRF_K = int(os.environ.get("VEF_RRF_K", "60"))
+EMBED_CACHE_SIZE = int(os.environ.get("VEF_SEARCH_EMBED_CACHE_SIZE", "256"))
+RESULT_CACHE_SIZE = int(os.environ.get("RECALL_RESULT_CACHE_SIZE", "128"))
+
+_RESULT_CACHE: OrderedDict[tuple[Any, ...], list[dict[str, Any]]] = OrderedDict()
 
 _MEDIA_KEYWORDS = {
     "image": {"image", "photo", "picture", "screenshot"},
@@ -25,22 +29,28 @@ _MEDIA_KEYWORDS = {
 
 
 def _tokenize_query(query: str) -> set[str]:
-    tokens = {t for t in re.findall(r"[a-z0-9]+", query.lower()) if len(t) > 1}
-    return tokens
+    return {t for t in re.findall(r"[a-z0-9]+", query.lower()) if len(t) > 1}
 
 
-def _keyword_boost(result: dict, query: str) -> float:
-    media_category = str(result.get("media_category", "")).lower()
-    if media_category not in {"text", "document"}:
-        return 0.0
-
+def _keyword_boost(result: dict[str, Any], query: str) -> float:
     words = _tokenize_query(query)
     if not words:
         return 0.0
-
-    text = f"{result.get('file_name', '')} {result.get('description', '')}".lower()
-    matches = sum(1 for w in words if w in text)
-    return min(0.15 * matches / max(len(words), 1), 0.15)
+    text = " ".join(
+        [
+            str(result.get("file_name", "")),
+            str(result.get("description", "")),
+            str(result.get("preview", "")),
+        ]
+    ).lower()
+    meta = result.get("metadata", {})
+    if isinstance(meta, dict):
+        text += " " + " ".join(
+            str(meta.get(key, ""))
+            for key in ("caption", "ocr_text", "gps_city", "exif_camera")
+        ).lower()
+    matches = sum(1 for word in words if word in text)
+    return min(0.2 * matches / max(len(words), 1), 0.2)
 
 
 def _detect_media_intent(query: str) -> str | None:
@@ -75,30 +85,98 @@ def _detect_time_cutoff(query: str) -> str | None:
     return None
 
 
-def _build_results(raw: dict) -> list[dict]:
-    results: list[dict] = []
-    if not raw.get("ids") or not raw["ids"] or not raw["ids"][0]:
-        return results
+def _build_filters(
+    query: str,
+    *,
+    media_type: str | None = None,
+    sources: list[str] | None = None,
+) -> dict[str, Any]:
+    filters: dict[str, Any] = {}
+    inferred_media = _detect_media_intent(query) if not media_type else None
+    if media_type:
+        filters["media_category"] = media_type
+    elif inferred_media:
+        filters["media_category"] = inferred_media
 
-    for i in range(len(raw["ids"][0])):
-        meta = raw["metadatas"][0][i]
-        distance = raw["distances"][0][i]
-        similarity = 1 - distance
-        results.append(
-            {
-                "id": raw["ids"][0][i],
-                "similarity": round(similarity, 4),
-                "file_path": meta.get("file_path", ""),
-                "file_name": meta.get("file_name", ""),
-                "media_category": meta.get("media_category", ""),
-                "timestamp": meta.get("timestamp", ""),
-                "description": meta.get("description", ""),
-                "source": meta.get("source", ""),
-                "preview": raw["documents"][0][i][:200] if raw["documents"][0][i] else "",
-                "metadata": {k: v for k, v in meta.items()},
-            }
+    inferred_sources = _detect_source_intent(query) if not sources else None
+    source_filters = sources or inferred_sources
+    if source_filters:
+        filters["sources"] = list(source_filters)
+
+    since_cutoff = _detect_time_cutoff(query)
+    if since_cutoff:
+        filters["since"] = since_cutoff
+    return filters
+
+
+def _candidate_to_result(candidate) -> dict[str, Any]:
+    meta = dict(candidate.metadata)
+    preview = str(meta.get("preview", ""))[:200]
+    return {
+        "id": candidate.doc_id,
+        "similarity": round(float(candidate.score), 4),
+        "file_path": meta.get("file_path", ""),
+        "file_name": meta.get("file_name", ""),
+        "media_category": meta.get("media_category", ""),
+        "timestamp": meta.get("timestamp", ""),
+        "description": meta.get("description", ""),
+        "source": meta.get("source", ""),
+        "preview": preview,
+        "metadata": meta,
+    }
+
+
+@lru_cache(maxsize=EMBED_CACHE_SIZE)
+def _embed_query_cached(
+    query: str,
+    provider: str,
+    model: str,
+    dimensions: int,
+) -> tuple[float, ...]:
+    return tuple(float(v) for v in embedder.embed_query(query))
+
+
+def _query_embedding(query: str) -> list[float]:
+    return list(
+        _embed_query_cached(
+            query,
+            config.EMBEDDING_PROVIDER,
+            config.EMBEDDING_MODEL,
+            config.EMBEDDING_DIMENSIONS,
         )
-    return results
+    )
+
+
+def _result_cache_key(
+    query: str,
+    n_results: int,
+    media_type: str | None,
+    sources: list[str] | None,
+) -> tuple[Any, ...]:
+    return (
+        query.strip().lower(),
+        int(n_results),
+        media_type or "",
+        tuple(sorted(sources or [])),
+        config.EMBEDDING_PROVIDER,
+        config.EMBEDDING_MODEL,
+        store.cache_epoch(),
+    )
+
+
+def _result_cache_get(key: tuple[Any, ...]) -> list[dict[str, Any]] | None:
+    cached = _RESULT_CACHE.get(key)
+    if cached is None:
+        return None
+    _RESULT_CACHE.move_to_end(key)
+    return cached
+
+
+def _result_cache_put(key: tuple[Any, ...], value: list[dict[str, Any]]) -> None:
+    _RESULT_CACHE[key] = value
+    _RESULT_CACHE.move_to_end(key)
+    while len(_RESULT_CACHE) > RESULT_CACHE_SIZE:
+        _RESULT_CACHE.popitem(last=False)
 
 
 def search(
@@ -106,114 +184,84 @@ def search(
     n_results: int = 20,
     media_type: str | None = None,
     sources: list[str] | None = None,
-) -> list[dict]:
-    try:
-        query_embedding = embedder.embed_query(query)
-    except Exception as exc:
-        logger.warning("Search embedding failed for query %r: %s", query, exc)
+) -> list[dict[str, Any]]:
+    query = query.strip()
+    if not query:
         return []
 
-    where: dict | None = None
-    filters: list[dict] = []
+    cache_key = _result_cache_key(query, n_results, media_type, sources)
+    cached = _result_cache_get(cache_key)
+    if cached is not None:
+        return cached
 
-    inferred_media = _detect_media_intent(query) if not media_type else None
-    if media_type:
-        filters.append({"media_category": {"$eq": media_type}})
-    elif inferred_media:
-        filters.append({"media_category": {"$eq": inferred_media}})
+    filters = _build_filters(query, media_type=media_type, sources=sources)
+    query_embedding = _query_embedding(query)
 
-    inferred_sources = _detect_source_intent(query) if not sources else None
-    source_filters = sources or inferred_sources
-    if source_filters:
-        if len(source_filters) == 1:
-            filters.append({"source": {"$eq": source_filters[0]}})
-        else:
-            filters.append({"source": {"$in": source_filters}})
+    dense = store.dense_search(query_embedding, n_results=n_results, filters=filters)
+    try:
+        keyword = store.keyword_search(query, n_results=n_results, filters=filters)
+    except Exception:
+        keyword = []
 
-    since_cutoff = _detect_time_cutoff(query)
-    if since_cutoff:
-        filters.append({"timestamp": {"$gte": since_cutoff}})
-
-    if len(filters) == 1:
-        where = filters[0]
-    elif len(filters) > 1:
-        where = {"$and": filters}
-
-    vector_raw = store.search(query_embedding, n_results=n_results, where=where)
-    vector_results = _build_results(vector_raw)
-
-    keyword_token = ""
-    query_tokens = sorted(_tokenize_query(query), key=len, reverse=True)
-    for token in query_tokens:
-        if len(token) >= 3:
-            keyword_token = token
-            break
-
-    keyword_results: list[dict] = []
-    if keyword_token:
-        keyword_raw = store.search(
-            query_embedding,
-            n_results=n_results,
-            where=where,
-            where_document={"$contains": keyword_token},
-        )
-        keyword_results = _build_results(keyword_raw)
-
-    by_id: dict[str, dict] = {r["id"]: r for r in vector_results}
-    for row in keyword_results:
+    by_id: dict[str, dict[str, Any]] = {}
+    for candidate in dense:
+        row = _candidate_to_result(candidate)
+        by_id[row["id"]] = row
+    for candidate in keyword:
+        row = _candidate_to_result(candidate)
         existing = by_id.get(row["id"])
         if existing is None or float(row["similarity"]) > float(existing["similarity"]):
             by_id[row["id"]] = row
 
-    if keyword_results:
+    if keyword:
         fused_ids = reciprocal_rank_fusion(
-            [
-                [r["id"] for r in vector_results],
-                [r["id"] for r in keyword_results],
-            ],
+            [[row.doc_id for row in dense], [row.doc_id for row in keyword]],
             k=RRF_K,
         )
     else:
-        fused_ids = [r["id"] for r in vector_results]
+        fused_ids = [row.doc_id for row in dense]
 
     fused_len = max(len(fused_ids), 1)
+    results: list[dict[str, Any]] = []
     for idx, doc_id in enumerate(fused_ids):
         row = by_id.get(doc_id)
-        if not row:
+        if row is None:
             continue
         rrf_bonus = max(0.0, 0.08 * (1 - (idx / fused_len)))
-        boosted = min(
-            1.0,
-            float(row["similarity"]) + _keyword_boost(row, query) + rrf_bonus,
+        row["similarity"] = round(
+            min(1.0, float(row["similarity"]) + _keyword_boost(row, query) + rrf_bonus),
+            4,
         )
-        row["similarity"] = round(boosted, 4)
+        if float(row["similarity"]) >= MIN_SIMILARITY:
+            results.append(row)
 
-    results = [by_id[doc_id] for doc_id in fused_ids if doc_id in by_id]
-    results = [r for r in results if float(r["similarity"]) >= MIN_SIMILARITY]
-    results.sort(key=lambda r: float(r["similarity"]), reverse=True)
-    return results
+    if not results and dense:
+        fallback = [_candidate_to_result(candidate) for candidate in dense[:n_results]]
+        results = [row for row in fallback if float(row["similarity"]) >= MIN_SIMILARITY]
+
+    results.sort(key=lambda item: float(item["similarity"]), reverse=True)
+    results = maybe_rerank(query, results[:n_results])
+    _result_cache_put(cache_key, results[:n_results])
+    return results[:n_results]
 
 
-def format_results(results: list[dict]) -> str:
+def format_results(results: list[dict[str, Any]]) -> str:
     if not results:
         return "No results found."
 
     lines = []
-    for i, r in enumerate(results, 1):
-        score_pct = f"{r['similarity'] * 100:.1f}%"
-        path = r["file_path"] or "(text snippet)"
-        category = r["media_category"]
-        ts = r["timestamp"][:10] if r["timestamp"] else "unknown"
-
-        lines.append(f"**{i}. [{category}] {r['file_name'] or 'text'}** — {score_pct} match")
-        if path:
-            lines.append(f"   Path: `{path}`")
-        lines.append(f"   Date: {ts} | Source: {r['source']}")
-        if r["preview"]:
-            preview = r["preview"][:150].replace("\n", " ")
+    for i, row in enumerate(results, 1):
+        score_pct = f"{float(row['similarity']) * 100:.1f}%"
+        path = row["file_path"] or "(text snippet)"
+        category = row["media_category"]
+        ts = str(row["timestamp"])[:10] if row["timestamp"] else "unknown"
+        lines.append(f"**{i}. [{category}] {row['file_name'] or 'text'}** — {score_pct} match")
+        lines.append(f"   Path: `{path}`")
+        lines.append(f"   Date: {ts} | Source: {row['source']}")
+        if row["preview"]:
+            preview = str(row["preview"])[:150].replace("\n", " ")
             lines.append(f"   Preview: {preview}")
-        if r["description"]:
-            lines.append(f"   Description: {r['description']}")
+        if row["description"]:
+            lines.append(f"   Description: {row['description']}")
         lines.append("")
-
     return "\n".join(lines)

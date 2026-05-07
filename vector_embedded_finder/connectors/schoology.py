@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from .. import config, embedder, store, utils
+from .. import config, embedder, keychain, store, utils
 from .base import BaseConnector
 
 logger = logging.getLogger(__name__)
@@ -23,19 +23,19 @@ def _creds_path() -> Path:
 
 
 def _load_creds() -> dict | None:
-    p = _creds_path()
-    if p.exists():
-        return json.loads(p.read_text())
-    return None
+    return keychain.load_json("schoology", legacy_path=_creds_path())
 
 
 def _save_creds(consumer_key: str, consumer_secret: str, base_url: str) -> None:
-    config.ensure_vef_dirs()
-    _creds_path().write_text(json.dumps({
-        "consumer_key": consumer_key,
-        "consumer_secret": consumer_secret,
-        "base_url": base_url.rstrip("/"),
-    }, indent=2))
+    keychain.save_json(
+        "schoology",
+        {
+            "consumer_key": consumer_key,
+            "consumer_secret": consumer_secret,
+            "base_url": base_url.rstrip("/"),
+        },
+        legacy_path=_creds_path(),
+    )
 
 
 def _strip_html(html: str) -> str:

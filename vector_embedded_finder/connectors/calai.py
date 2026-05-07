@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from .. import config, embedder, store, utils
+from .. import config, embedder, keychain, store, utils
 from .base import BaseConnector
 
 logger = logging.getLogger(__name__)
@@ -21,16 +21,14 @@ def _creds_path() -> Path:
 
 
 def _load_api_key() -> str | None:
-    p = _creds_path()
-    if p.exists():
-        data = json.loads(p.read_text())
+    data = keychain.load_json("calai", legacy_path=_creds_path())
+    if data:
         return data.get("api_key")
     return None
 
 
 def _save_api_key(key: str) -> None:
-    config.ensure_vef_dirs()
-    _creds_path().write_text(json.dumps({"api_key": key}, indent=2))
+    keychain.save_json("calai", {"api_key": key}, legacy_path=_creds_path())
 
 
 class CalAIConnector(BaseConnector):

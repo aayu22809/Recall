@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from vector_embedded_finder import keychain
 from vector_embedded_finder.connectors.canvas import CanvasConnector
 from vector_embedded_finder.connectors.gmail import GmailConnector
 
@@ -13,6 +14,7 @@ def test_gmail_not_authenticated_without_token(monkeypatch: Any, tmp_path: Path)
 
     token_path = tmp_path / "gmail.json"
     monkeypatch.setattr(config, "GMAIL_CREDENTIALS_FILE", token_path, raising=False)
+    monkeypatch.setattr(keychain, "_security_available", lambda: False)
     assert GmailConnector().is_authenticated() is False
 
 
@@ -21,6 +23,7 @@ def test_canvas_not_authenticated_without_creds(monkeypatch: Any, tmp_path: Path
 
     creds_path = tmp_path / "canvas.json"
     monkeypatch.setattr(config, "CANVAS_CREDENTIALS_FILE", creds_path, raising=False)
+    monkeypatch.setattr(keychain, "_security_available", lambda: False)
     assert CanvasConnector().is_authenticated() is False
 
 
@@ -31,4 +34,10 @@ def test_gmail_is_authenticated_with_token(monkeypatch: Any, tmp_path: Path) -> 
     token_path.parent.mkdir(parents=True, exist_ok=True)
     token_path.write_text(json.dumps({"token": "abc"}))
     monkeypatch.setattr(config, "GMAIL_CREDENTIALS_FILE", token_path, raising=False)
+    monkeypatch.setattr(keychain, "_security_available", lambda: False)
+    assert GmailConnector().is_authenticated() is True
+
+
+def test_gmail_is_authenticated_with_keychain_secret(monkeypatch: Any) -> None:
+    monkeypatch.setattr(keychain, "load_json", lambda *args, **kwargs: {"token": "abc"})
     assert GmailConnector().is_authenticated() is True

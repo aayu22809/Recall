@@ -167,7 +167,7 @@ def _detect_embedding_provider() -> str:
             )
         except Exception:
             provider = ""
-    return provider or "gemini"
+    return provider or "local"
 
 
 # ── Screen 1: Splash ──────────────────────────────────────────────────────────
@@ -176,7 +176,7 @@ def _detect_embedding_provider() -> str:
 def screen_splash() -> None:
     CONSOLE.clear()
     CONSOLE.print()
-    CONSOLE.print(f"  [{C['dim']}]╭─ vector-embedded-finder setup ─╮[/]")
+    CONSOLE.print(f"  [{C['dim']}]╭─ recall setup ────────────────╮[/]")
     CONSOLE.print(f"  [{C['dim']}]│ local multimodal memory        │[/]")
     CONSOLE.print(f"  [{C['dim']}]╰────────────────────────────────╯[/]")
     CONSOLE.print()
@@ -211,11 +211,13 @@ def screen_detect() -> dict:
 
     # Required packages
     time.sleep(0.12)
-    pkg_checks = [("chromadb", "chromadb"), ("python-dotenv", "dotenv")]
+    pkg_checks = [("sqlite runtime", "sqlite3"), ("python-dotenv", "dotenv")]
     if provider == "gemini":
         pkg_checks.append(("google-genai", "google.genai"))
     elif provider in {"ollama", "nim"}:
         pkg_checks.append(("httpx", "httpx"))
+    else:
+        pkg_checks.append(("sentence-transformers (optional)", "sentence_transformers"))
 
     for display, import_name in pkg_checks:
         try:
@@ -241,7 +243,7 @@ def screen_detect() -> dict:
             result["existing_key"] = existing_key
             CONSOLE.print(f"  {warn('API key found  [dim]→ you can update or keep it[/dim]')}")
         else:
-            CONSOLE.print(f"  {warn('no API key found  [dim]→ we will set it up[/dim]')}")
+            CONSOLE.print(f"  {warn('no API key found  [dim]→ optional cloud enrichment will stay disabled[/dim]')}")
     else:
         CONSOLE.print(
             f"  {ok('API key setup skipped  [dim](non-Gemini provider selected)[/dim]')}"
@@ -256,7 +258,7 @@ def screen_detect() -> dict:
 
 
 def screen_api_key(detected: dict) -> str:
-    provider = detected.get("embedding_provider", "gemini")
+    provider = detected.get("embedding_provider", "local")
     if provider != "gemini":
         CONSOLE.clear()
         step_header(1, 3, "EMBEDDING PROVIDER")
@@ -268,7 +270,7 @@ def screen_api_key(detected: dict) -> str:
         return ""
 
     CONSOLE.clear()
-    step_header(1, 3, "GEMINI API KEY")
+    step_header(1, 3, "OPTIONAL GEMINI ENRICHMENT")
 
     existing = detected.get("existing_key", "")
     if existing:
@@ -282,7 +284,7 @@ def screen_api_key(detected: dict) -> str:
             CONSOLE.print()
             return existing
 
-    CONSOLE.print(f"  [{C['dim']}]You need a free Gemini key to generate embeddings.[/]")
+    CONSOLE.print(f"  [{C['dim']}]Recall now embeds and searches locally. Gemini is optional for richer cloud captions.[/]")
     CONSOLE.print()
     CONSOLE.print(f"  [{C['accent']}]→ Get yours free at:[/] [underline]https://aistudio.google.com/apikey[/underline]")
     CONSOLE.print()
@@ -912,7 +914,7 @@ def screen_done(detected: dict, stats: dict[str, int]) -> None:
         ),
         (
             "Gemini API Key",
-            f"(set — see {ENV_FILE.name} in repo root)" if provider == "gemini" else "(not required)",
+            f"(optional — see {ENV_FILE.name} in repo root)" if provider == "gemini" else "(optional enrichment only)",
             C["warn"] if provider == "gemini" else C["dim"],
         ),
     ]

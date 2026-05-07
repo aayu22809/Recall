@@ -56,7 +56,7 @@ export default async function OpenMemory(props: { arguments: { query: string } }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("GEMINI_API_KEY") || msg.includes("AUTH_ERROR")) {
-      await showHUD("⚠ API key missing — check extension preferences");
+      await showHUD("⚠ Optional enrichment key invalid — check extension preferences");
       await openExtensionPreferences();
     } else if (msg.includes("daemon") || msg.includes("DAEMON")) {
       await showHUD("⚠ Daemon not running — run 'vef-daemon start' in terminal");

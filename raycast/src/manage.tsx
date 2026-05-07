@@ -18,10 +18,14 @@ import {
   addWatchedDir,
   connectInTerminal,
   fetchConnectorStatus,
+  fetchIndexStatus,
+  fetchMigrationStatus,
+  fetchModelStatus,
   fetchProgress,
   fetchSyncRunning,
   fetchWatchedDirs,
   indexFolderInTerminal,
+  rebuildIndex,
   removeWatchedDir,
   saveConfigure,
   triggerSync,
@@ -102,7 +106,7 @@ function ConfigureForm() {
         </ActionPanel>
       }
     >
-      <Form.Description title="Gemini" text="Embedding model API key (required for search)" />
+      <Form.Description title="Gemini" text="Optional cloud enrichment key. Search and indexing run locally without it." />
       <Form.PasswordField
         id="geminiKey"
         title="Gemini API Key"
@@ -242,16 +246,22 @@ export default function ManageRecall() {
   const [progress, setProgress] = useState<ProgressInfo>({ indexing: false, queued: 0, total_indexed: 0 });
   const [connectors, setConnectors] = useState<ConnectorStatusMap>({});
   const [watchedDirs, setWatchedDirs] = useState<string[]>([]);
+  const [modelStatus, setModelStatus] = useState<Record<string, unknown>>({});
+  const [indexStatus, setIndexStatus] = useState<Record<string, unknown>>({});
+  const [migrationStatus, setMigrationStatus] = useState<Record<string, unknown>>({});
   const prevDocs = useRef(0);
 
   const loadAll = useCallback(async () => {
     try {
-      const [health, connStatus, prog, dirs, syncRunning] = await Promise.all([
+      const [health, connStatus, prog, dirs, syncRunning, models, indexInfo, migrationInfo] = await Promise.all([
         validateSetup(),
         fetchConnectorStatus(),
         fetchProgress(),
         fetchWatchedDirs(),
         fetchSyncRunning(),
+        fetchModelStatus(),
+        fetchIndexStatus(),
+        fetchMigrationStatus(),
       ]);
       setDaemonOk(true);
       setDocCount(health.count ?? 0);
@@ -259,6 +269,9 @@ export default function ManageRecall() {
       setProgress(prog);
       setWatchedDirs(dirs);
       setSyncing(syncRunning);
+      setModelStatus(models);
+      setIndexStatus(indexInfo);
+      setMigrationStatus(migrationInfo);
     } catch {
       setDaemonOk(false);
     } finally {
@@ -344,6 +357,21 @@ export default function ManageRecall() {
     }
   }
 
+  async function handleRebuildIndex() {
+    const toast = await showToast({ style: Toast.Style.Animated, title: "Rebuilding search index…" });
+    try {
+      const result = await rebuildIndex();
+      toast.style = Toast.Style.Success;
+      toast.title = "Search index rebuilt";
+      toast.message = `${result["count"] ?? 0} items`;
+      await loadAll();
+    } catch (err) {
+      toast.style = Toast.Style.Failure;
+      toast.title = "Rebuild failed";
+      toast.message = err instanceof Error ? err.message : String(err);
+    }
+  }
+
   const connectorIcon = (name: string): Icon => {
     const icons: Record<string, Icon> = {
       gmail: Icon.Envelope,
@@ -356,6 +384,11 @@ export default function ManageRecall() {
     };
     return icons[name] ?? Icon.Plug;
   };
+
+  const modelRows = (modelStatus["models"] as Record<string, Record<string, unknown>> | undefined) ?? {};
+  const runtime = (modelStatus["runtime"] as Record<string, unknown> | undefined) ?? {};
+  const indexBackend = String(indexStatus["backend"] ?? "unknown");
+  const migrationState = String(migrationStatus["status"] ?? "unknown");
 
   return (
     <List isLoading={loading} navigationTitle="Manage Recall">
@@ -378,7 +411,42 @@ export default function ManageRecall() {
           actions={
             <ActionPanel>
               <Action title="Sync All Connectors" icon={Icon.ArrowClockwise} onAction={handleSyncAll} />
+              <Action title="Rebuild Search Index" icon={Icon.HardDrive} onAction={() => void handleRebuildIndex()} />
               <Action title="Configure API Keys" icon={Icon.Gear} onAction={() => push(<ConfigureForm />)} />
+              <Action title="Refresh" icon={Icon.ArrowClockwise} onAction={() => void loadAll()} />
+            </ActionPanel>
+          }
+        />
+        <List.Item
+          icon={Icon.HardDrive}
+          title={`Index backend: ${indexBackend}`}
+          subtitle={`${String(indexStatus["count"] ?? 0)} items · migration ${migrationState}`}
+          accessories={[
+            {
+              text: indexStatus["dirty"] ? "Rebuild recommended" : "Healthy",
+              icon: indexStatus["dirty"] ? Icon.ExclamationMark : Icon.CheckCircle,
+            },
+          ]}
+          actions={
+            <ActionPanel>
+              <Action title="Rebuild Search Index" icon={Icon.HardDrive} onAction={() => void handleRebuildIndex()} />
+              <Action title="Refresh" icon={Icon.ArrowClockwise} onAction={() => void loadAll()} />
+            </ActionPanel>
+          }
+        />
+        <List.Item
+          icon={Icon.Bolt}
+          title={`Embedding runtime: ${String(runtime["provider"] ?? "unknown")}`}
+          subtitle={Object.entries(modelRows)
+            .map(([name, row]) => `${name}:${String(row["status"] ?? "unknown")}`)
+            .join(" · ") || "No model status"}
+          accessories={[
+            {
+              text: runtime["apple_silicon"] ? "Apple Silicon" : "Compatibility mode",
+            },
+          ]}
+          actions={
+            <ActionPanel>
               <Action title="Refresh" icon={Icon.ArrowClockwise} onAction={() => void loadAll()} />
             </ActionPanel>
           }
@@ -479,7 +547,7 @@ export default function ManageRecall() {
         <List.Item
           icon={Icon.Gear}
           title="API Keys & Credentials"
-          subtitle="Gemini, Canvas, Schoology"
+          subtitle="Optional Gemini enrichment, Canvas, Schoology"
           actions={
             <ActionPanel>
               <Action title="Configure" icon={Icon.Gear} onAction={() => push(<ConfigureForm />)} />

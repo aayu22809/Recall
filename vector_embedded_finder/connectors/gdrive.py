@@ -11,7 +11,7 @@ from typing import Callable
 
 import pypdf
 
-from .. import config, embedder, store, utils
+from .. import config, embedder, keychain, store, utils
 from .base import BaseConnector
 
 logger = logging.getLogger(__name__)
@@ -49,15 +49,11 @@ def _oauth_client_path() -> Path:
 
 
 def _load_token() -> dict | None:
-    p = _token_path()
-    if p.exists():
-        return json.loads(p.read_text())
-    return None
+    return keychain.load_json("gmail", legacy_path=_token_path())
 
 
 def _save_token(data: dict) -> None:
-    config.ensure_vef_dirs()
-    _token_path().write_text(json.dumps(data, indent=2))
+    keychain.save_json("gmail", data, legacy_path=_token_path())
 
 
 class GDriveConnector(BaseConnector):
